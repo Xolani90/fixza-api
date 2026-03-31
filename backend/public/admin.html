@@ -54,7 +54,7 @@
 
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
             gap: 20px;
             margin-bottom: 30px;
         }
@@ -185,6 +185,7 @@
             <div class="stat-card"><div class="stat-number">-</div><div class="stat-label">Total Jobs</div></div>
             <div class="stat-card"><div class="stat-number">-</div><div class="stat-label">Open Jobs</div></div>
             <div class="stat-card"><div class="stat-number">-</div><div class="stat-label">Completed</div></div>
+            <div class="stat-card"><div class="stat-number">-</div><div class="stat-label">⭐ Avg Rating</div></div>
         </div>
 
         <div class="tabs">
@@ -216,6 +217,7 @@
                         <div class="stat-card"><div class="stat-number">${data.stats.totalJobs}</div><div class="stat-label">Total Jobs</div></div>
                         <div class="stat-card"><div class="stat-number">${data.stats.openJobs}</div><div class="stat-label">Open Jobs</div></div>
                         <div class="stat-card"><div class="stat-number">${data.stats.completedJobs}</div><div class="stat-label">Completed</div></div>
+                        <div class="stat-card"><div class="stat-number">${data.stats.averageRating || 0}</div><div class="stat-label">⭐ Avg Rating</div></div>
                     `;
                 }
             } catch (error) {
