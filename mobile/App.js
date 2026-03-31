@@ -7,7 +7,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
-const API_URL = 'http://172.20.10.4:4000';
+// LIVE API URL - Deployed on Render
+const API_URL = 'https://fixza-api.onrender.com';
 const AuthContext = createContext();
 
 // ========== LOGIN SCREEN ==========
@@ -36,7 +37,7 @@ function LoginScreen({ navigation }) {
         Alert.alert('Error', data.error || 'Login failed');
       }
     } catch (error) {
-      Alert.alert('Error', 'Connection failed');
+      Alert.alert('Error', 'Connection failed. Check your internet connection.');
     } finally {
       setLoading(false);
     }
@@ -101,7 +102,7 @@ function RegisterScreen({ navigation }) {
         Alert.alert('Error', data.error || 'Registration failed');
       }
     } catch (error) {
-      Alert.alert('Error', 'Connection failed');
+      Alert.alert('Error', 'Connection failed. Check your internet connection.');
     } finally {
       setLoading(false);
     }
