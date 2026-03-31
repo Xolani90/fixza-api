@@ -1,15 +1,25 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
-import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, ScrollView, Alert, ActivityIndicator, SafeAreaView } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, ScrollView, Alert, ActivityIndicator, SafeAreaView, Share, Platform } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
 // LIVE API URL - Deployed on Render
 const API_URL = 'https://fixza-api.onrender.com';
 const AuthContext = createContext();
+
+// Configure notifications
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
 
 // ========== LOGIN SCREEN ==========
 function LoginScreen({ navigation }) {
@@ -158,21 +168,27 @@ function RegisterScreen({ navigation }) {
   );
 }
 
-// ========== HOME SCREEN (Jobs) ==========
+// ========== HOME SCREEN (Jobs) with Category Filter ==========
 function HomeScreen({ navigation }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedCategory, setSelectedCategory] = useState('all');
   const { user, token } = useContext(AuthContext);
+
+  const categories = ['all', 'Plumbing', 'Electrical', 'Cleaning', 'Painting', 'Handyman', 'Gardening', 'Moving', 'Automotive'];
 
   useEffect(() => {
     loadJobs();
     const unsubscribe = navigation.addListener('focus', loadJobs);
     return unsubscribe;
-  }, [navigation]);
+  }, [navigation, selectedCategory]);
 
   const loadJobs = async () => {
     try {
-      const url = user.role === 'fixer' ? `${API_URL}/my-jobs` : `${API_URL}/jobs`;
+      let url = user.role === 'fixer' ? `${API_URL}/my-jobs` : `${API_URL}/jobs`;
+      if (selectedCategory !== 'all') {
+        url += `?category=${selectedCategory}`;
+      }
       const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       const data = await response.json();
       setJobs(data.jobs || []);
@@ -211,6 +227,20 @@ function HomeScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
+      {/* Category Filter */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryFilter}>
+        {categories.map(cat => (
+          <TouchableOpacity
+            key={cat}
+            style={[styles.categoryChipFilter, selectedCategory === cat && styles.categoryChipActive]}
+            onPress={() => setSelectedCategory(cat)}
+          >
+            <Text style={[styles.categoryChipText, selectedCategory === cat && styles.categoryChipTextActive]}>
+              {cat === 'all' ? 'All' : cat}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
       <FlatList 
         data={jobs} 
         renderItem={renderJob} 
@@ -355,7 +385,7 @@ function ProfileScreen() {
   );
 }
 
-// ========== JOB DETAILS SCREEN ==========
+// ========== JOB DETAILS SCREEN with Share Button ==========
 function JobDetailsScreen({ route, navigation }) {
   const { jobId } = route.params;
   const [job, setJob] = useState(null);
@@ -375,6 +405,20 @@ function JobDetailsScreen({ route, navigation }) {
       console.error(error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const shareJob = async () => {
+    try {
+      const result = await Share.share({
+        message: `🔧 FixZA Job: ${job.title}\n\n📋 Description: ${job.description}\n📍 Location: ${job.location}\n💰 Budget: R${job.budget || 'Negotiable'}\n\nDownload FixZA app to apply!`,
+        url: 'https://fixza-api.onrender.com'
+      });
+      if (result.action === Share.sharedAction) {
+        console.log('Job shared successfully');
+      }
+    } catch (error) {
+      console.error('Error sharing:', error);
     }
   };
 
@@ -436,6 +480,11 @@ function JobDetailsScreen({ route, navigation }) {
         <Text style={styles.detailStatus}>Status: {job.status}</Text>
       </View>
       
+      {/* Share Button */}
+      <TouchableOpacity style={styles.shareButton} onPress={shareJob}>
+        <Text style={styles.shareButtonText}>📱 Share this Job</Text>
+      </TouchableOpacity>
+      
       {/* Fixer Actions */}
       {user.role === 'fixer' && job.status === 'open' && (
         <TouchableOpacity style={styles.actionButton} onPress={acceptJob}>
@@ -496,6 +545,32 @@ function MainApp() {
   );
 }
 
+// ========== PUSH NOTIFICATION HELPER ==========
+async function registerForPushNotificationsAsync() {
+  let token;
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'default',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#FF231F7C',
+    });
+  }
+
+  const { status: existingStatus } = await Notifications.getPermissionsAsync();
+  let finalStatus = existingStatus;
+  if (existingStatus !== 'granted') {
+    const { status } = await Notifications.requestPermissionsAsync();
+    finalStatus = status;
+  }
+  if (finalStatus !== 'granted') {
+    alert('Failed to get push token for push notification!');
+    return;
+  }
+  token = (await Notifications.getExpoPushTokenAsync()).data;
+  return token;
+}
+
 // ========== APP ROOT ==========
 export default function App() {
   const [isLoading, setIsLoading] = useState(true);
@@ -524,6 +599,20 @@ export default function App() {
     await AsyncStorage.setItem('user', JSON.stringify(newUser));
     setToken(newToken);
     setUser(newUser);
+    
+    // Register push token
+    try {
+      const pushToken = await registerForPushNotificationsAsync();
+      if (pushToken) {
+        await fetch(`${API_URL}/users/${newUser.id}/push-token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${newToken}` },
+          body: JSON.stringify({ pushToken }),
+        });
+      }
+    } catch (error) {
+      console.error('Push token registration error:', error);
+    }
   };
 
   const signOut = async () => {
@@ -574,6 +663,30 @@ const styles = StyleSheet.create({
   roleActive: { backgroundColor: '#1A8A5A', borderColor: '#1A8A5A' },
   roleText: { color: '#6B7280' },
   roleTextActive: { color: '#fff' },
+  categoryFilter: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  categoryChipFilter: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#f3f4f6',
+    marginRight: 8,
+  },
+  categoryChipActive: {
+    backgroundColor: '#1A8A5A',
+  },
+  categoryChipText: {
+    color: '#6b7280',
+    fontSize: 14,
+  },
+  categoryChipTextActive: {
+    color: '#fff',
+  },
   jobList: { padding: 12 },
   jobCard: { backgroundColor: '#fff', borderRadius: 12, padding: 12, marginBottom: 12, elevation: 2 },
   jobHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
@@ -646,6 +759,22 @@ const styles = StyleSheet.create({
   detailStatus: { fontSize: 12, color: '#1A8A5A', fontWeight: 'bold', marginTop: 8 },
   actionButton: { backgroundColor: '#1A8A5A', margin: 12, padding: 16, borderRadius: 10, alignItems: 'center' },
   actionButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  shareButton: {
+    backgroundColor: '#1A8A5A',
+    marginHorizontal: 12,
+    marginBottom: 12,
+    padding: 16,
+    borderRadius: 10,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  shareButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginLeft: 8,
+  },
   backButton: { backgroundColor: '#6B7280', margin: 12, padding: 16, borderRadius: 10, alignItems: 'center' },
   backButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
 });

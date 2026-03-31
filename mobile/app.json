@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "FixZA",
+    "slug": "fixza-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1A8A5A"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1A8A5A"
+      },
+      "package": "com.xolani.fixza",
+      "versionCode": 1
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.xolani.fixza"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "25a0397b-98ec-45ed-b26c-0f52ebe1e8c9"
+      }
+    }
+  }
+}

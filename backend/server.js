@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import fs from 'fs';
+import { Expo } from 'expo-server-sdk';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -13,6 +14,9 @@ const __dirname = dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'fixza-super-secret-key-change-this-later';
+
+// Initialize Expo for push notifications
+let expo = new Expo();
 
 // CORS configuration - Allow all origins for admin dashboard
 app.use(cors({
@@ -35,7 +39,7 @@ const dbPath = join(__dirname, 'fixza.db');
 const db = new Database(dbPath);
 db.pragma('foreign_keys = ON');
 
-// Create tables if they don't exist
+// Create tables if they don't exist (add pushToken column)
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,6 +49,7 @@ db.exec(`
     phone TEXT,
     role TEXT CHECK(role IN ('customer', 'fixer')) NOT NULL,
     avatar TEXT,
+    pushToken TEXT,
     latitude REAL,
     longitude REAL,
     address TEXT,
@@ -114,6 +119,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(userId);
 `);
 
+// Add pushToken column if it doesn't exist (for existing databases)
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN pushToken TEXT`);
+  console.log('✅ Added pushToken column to users table');
+} catch (e) {
+  // Column already exists, ignore
+}
+
 console.log('✅ Database initialized at:', dbPath);
 
 // ========== HELPER FUNCTIONS ==========
@@ -129,13 +142,30 @@ function getDistance(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-// Create notification helper
+// Create notification helper with push notifications
 function createNotification(userId, title, body, data = null) {
   try {
+    // Save to database
     db.prepare(`
       INSERT INTO notifications (userId, title, body, data)
       VALUES (?, ?, ?, ?)
     `).run(userId, title, body, data ? JSON.stringify(data) : null);
+    
+    // Send push notification
+    const user = db.prepare('SELECT pushToken FROM users WHERE id = ?').get(userId);
+    if (user && user.pushToken && Expo.isExpoPushToken(user.pushToken)) {
+      const messages = [{
+        to: user.pushToken,
+        sound: 'default',
+        title: title,
+        body: body,
+        data: data || {},
+      }];
+      
+      expo.sendPushNotificationsAsync(messages).catch(err => {
+        console.error('Push notification error:', err);
+      });
+    }
   } catch (error) {
     console.error('Create notification error:', error);
   }
@@ -150,7 +180,7 @@ const authenticate = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = db.prepare('SELECT id, email, fullName, role, phone, avatar, latitude, longitude, address, createdAt FROM users WHERE id = ?').get(decoded.userId);
+    const user = db.prepare('SELECT id, email, fullName, role, phone, avatar, pushToken, latitude, longitude, address, createdAt FROM users WHERE id = ?').get(decoded.userId);
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
     }
@@ -165,7 +195,7 @@ const authenticate = (req, res, next) => {
 app.get('/', (req, res) => {
   res.json({ 
     message: 'FixZA API is running!', 
-    version: '2.1.0',
+    version: '2.2.0',
     endpoints: {
       health: 'GET /health',
       register: 'POST /auth/register',
@@ -267,6 +297,21 @@ app.post('/auth/login', async (req, res) => {
 
 app.get('/auth/me', authenticate, (req, res) => {
   res.json({ success: true, user: req.user });
+});
+
+// Save push token for user
+app.post('/users/:userId/push-token', authenticate, (req, res) => {
+  try {
+    const { pushToken } = req.body;
+    if (!pushToken) {
+      return res.status(400).json({ error: 'Push token required' });
+    }
+    db.prepare('UPDATE users SET pushToken = ? WHERE id = ?').run(pushToken, req.params.userId);
+    res.json({ success: true, message: 'Push token saved' });
+  } catch (error) {
+    console.error('Save push token error:', error);
+    res.status(500).json({ error: 'Failed to save push token' });
+  }
 });
 
 // Update user location
@@ -843,7 +888,7 @@ app.get('/notifications/unread/count', authenticate, (req, res) => {
 // ========== ADMIN ROUTES ==========
 app.get('/debug/users', (req, res) => {
   try {
-    const users = db.prepare('SELECT id, email, fullName, role, avatar, latitude, longitude, address, createdAt FROM users ORDER BY createdAt DESC').all();
+    const users = db.prepare('SELECT id, email, fullName, role, avatar, pushToken, latitude, longitude, address, createdAt FROM users ORDER BY createdAt DESC').all();
     res.json({ users });
   } catch (error) {
     console.error('Debug users error:', error);
@@ -936,4 +981,11 @@ app.listen(PORT, () => {
   console.log(`📊 Admin: http://localhost:${PORT}/admin.html`);
   console.log(`💾 Database: ${dbPath}`);
   console.log('=================================');
+  console.log('\n✨ Features:');
+  console.log('   ⭐ Ratings & Reviews');
+  console.log('   💬 Enhanced Messaging');
+  console.log('   📸 Job Photos Support');
+  console.log('   📍 Location Services');
+  console.log('   🔔 Push Notifications');
+  console.log('=================================\n');
 });
