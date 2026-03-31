@@ -14,8 +14,13 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'fixza-super-secret-key-change-this-later';
 
-// Middleware
-app.use(cors());
+// CORS configuration - Allow all origins for admin dashboard
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json({ limit: '10mb' }));
 
 // Serve static files for admin dashboard and landing page
