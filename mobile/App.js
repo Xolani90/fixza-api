@@ -1,18 +1,19 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
-import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, ScrollView, Alert, ActivityIndicator, SafeAreaView, Share, Platform } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, ScrollView, Alert, ActivityIndicator, SafeAreaView, Share, Platform, StatusBar, Image } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
+import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
-// LIVE API URL - Deployed on Render
-const API_URL = 'https://fixza-api.onrender.com';
+const API_URL = 'http://localhost:4000';
 const AuthContext = createContext();
 
-// Configure notifications
+// ─── FIX 1: Notification handler is now clean — no stray styles inside it ────
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -21,7 +22,8 @@ Notifications.setNotificationHandler({
   }),
 });
 
-// ========== LOGIN SCREEN ==========
+// ─── AUTH SCREENS ────────────────────────────────────────────────────────────
+
 function LoginScreen({ navigation }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -29,10 +31,7 @@ function LoginScreen({ navigation }) {
   const { signIn } = useContext(AuthContext);
 
   const handleLogin = async () => {
-    if (!email || !password) {
-      Alert.alert('Error', 'Please enter email and password');
-      return;
-    }
+    if (!email || !password) { Alert.alert('Error', 'Please enter email and password'); return; }
     setLoading(true);
     try {
       const response = await fetch(`${API_URL}/auth/login`, {
@@ -41,60 +40,83 @@ function LoginScreen({ navigation }) {
         body: JSON.stringify({ email, password }),
       });
       const data = await response.json();
-      if (data.success) {
-        await signIn(data.token, data.user);
-      } else {
-        Alert.alert('Error', data.error || 'Login failed');
-      }
-    } catch (error) {
-      Alert.alert('Error', 'Connection failed. Check your internet connection.');
-    } finally {
-      setLoading(false);
-    }
+      if (data.success) { await signIn(data.token, data.user); }
+      else { Alert.alert('Error', data.error || 'Login failed'); }
+    } catch { Alert.alert('Error', 'Connection failed'); }
+    finally { setLoading(false); }
   };
 
   return (
     <SafeAreaView style={styles.authContainer}>
-      <View style={styles.authContent}>
-        <Text style={styles.authTitle}>FixZA</Text>
-        <Text style={styles.authSubtitle}>South Africa's Local Services</Text>
-        <TextInput 
-          style={styles.authInput} 
-          placeholder="Email" 
-          value={email} 
-          onChangeText={setEmail} 
-          autoCapitalize="none" 
-          keyboardType="email-address" 
-        />
-        <TextInput 
-          style={styles.authInput} 
-          placeholder="Password" 
-          value={password} 
-          onChangeText={setPassword} 
-          secureTextEntry 
-        />
-        <TouchableOpacity style={styles.authButton} onPress={handleLogin} disabled={loading}>
-          <Text style={styles.authButtonText}>{loading ? 'Logging in...' : 'Login'}</Text>
+      <StatusBar barStyle="light-content" backgroundColor="#1A8A5A" />
+      <View style={styles.authTop}>
+        <Text style={styles.authLogo}>FixZA 🔧</Text>
+        <Text style={styles.authTagline}>South Africa's Local Services</Text>
+      </View>
+      <View style={styles.authCard}>
+        <Text style={styles.authCardTitle}>Welcome back</Text>
+        <TextInput style={styles.authInput} placeholder="Email address" placeholderTextColor="#9CA3AF" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
+        <TextInput style={styles.authInput} placeholder="Password" placeholderTextColor="#9CA3AF" value={password} onChangeText={setPassword} secureTextEntry />
+        <TouchableOpacity style={styles.authBtn} onPress={handleLogin} disabled={loading}>
+          <Text style={styles.authBtnText}>{loading ? 'Logging in...' : 'Login'}</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => navigation.navigate('Register')}>
-          <Text style={styles.authLink}>Don't have an account? Register</Text>
+          <Text style={styles.authLink}>Don't have an account? <Text style={styles.authLinkBold}>Register</Text></Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
 }
 
-// ========== REGISTER SCREEN ==========
 function RegisterScreen({ navigation }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [phone, setPhone] = useState('');
   const [role, setRole] = useState('customer');
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState('register');
+  const [otpCode, setOtpCode] = useState('');
+  const [tempUserId, setTempUserId] = useState(null);
+  const [resendTimer, setResendTimer] = useState(0);
   const { signIn } = useContext(AuthContext);
 
+  const sendOTP = async () => {
+    if (!phone || phone.length < 10) {
+      Alert.alert('Error', 'Please enter a valid South African phone number');
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/auth/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        setTempUserId(data.userId);
+        setStep('verify');
+        setResendTimer(60);
+        const timer = setInterval(() => {
+          setResendTimer(prev => {
+            if (prev <= 1) { clearInterval(timer); return 0; }
+            return prev - 1;
+          });
+        }, 1000);
+        Alert.alert('OTP Sent', 'Please check your phone for the verification code');
+      } else {
+        Alert.alert('Error', data.error || 'Failed to send OTP');
+      }
+    } catch {
+      Alert.alert('Error', 'Connection failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleRegister = async () => {
-    if (!email || !password || !fullName) {
+    if (!email || !password || !fullName || !phone) {
       Alert.alert('Error', 'Please fill all required fields');
       return;
     }
@@ -103,475 +125,1857 @@ function RegisterScreen({ navigation }) {
       const response = await fetch(`${API_URL}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, fullName, role }),
+        body: JSON.stringify({ email, password, fullName, phone, role }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        await sendOTP();
+      } else {
+        Alert.alert('Error', data.error || 'Registration failed');
+        setLoading(false);
+      }
+    } catch {
+      Alert.alert('Error', 'Connection failed');
+      setLoading(false);
+    }
+  };
+
+  const verifyOTP = async () => {
+    if (!otpCode || otpCode.length !== 6) {
+      Alert.alert('Error', 'Please enter the 6-digit OTP');
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/auth/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: tempUserId, otp: otpCode }),
       });
       const data = await response.json();
       if (data.success) {
         await signIn(data.token, data.user);
       } else {
-        Alert.alert('Error', data.error || 'Registration failed');
+        Alert.alert('Error', data.error || 'Invalid OTP');
       }
-    } catch (error) {
-      Alert.alert('Error', 'Connection failed. Check your internet connection.');
+    } catch {
+      Alert.alert('Error', 'Verification failed');
     } finally {
       setLoading(false);
     }
   };
 
-  return (
-    <SafeAreaView style={styles.authContainer}>
-      <ScrollView contentContainerStyle={styles.authContent}>
-        <Text style={styles.authTitle}>Create Account</Text>
-        <TextInput 
-          style={styles.authInput} 
-          placeholder="Full Name *" 
-          value={fullName} 
-          onChangeText={setFullName} 
-        />
-        <TextInput 
-          style={styles.authInput} 
-          placeholder="Email *" 
-          value={email} 
-          onChangeText={setEmail} 
-          autoCapitalize="none" 
-          keyboardType="email-address" 
-        />
-        <TextInput 
-          style={styles.authInput} 
-          placeholder="Password *" 
-          value={password} 
-          onChangeText={setPassword} 
-          secureTextEntry 
-        />
-        <View style={styles.roleSelector}>
-          <TouchableOpacity 
-            style={[styles.roleOption, role === 'customer' && styles.roleActive]} 
-            onPress={() => setRole('customer')}
-          >
-            <Text style={[styles.roleText, role === 'customer' && styles.roleTextActive]}>👤 Customer</Text>
+  const resendOTP = async () => {
+    if (resendTimer > 0) return;
+    await sendOTP();
+  };
+
+  if (step === 'verify') {
+    return (
+      <SafeAreaView style={styles.authContainer}>
+        <StatusBar barStyle="light-content" backgroundColor="#1A8A5A" />
+        <View style={styles.authTop}>
+          <Text style={styles.authLogo}>FixZA 🔧</Text>
+          <Text style={styles.authTagline}>Verify your phone</Text>
+        </View>
+        <View style={styles.authCard}>
+          <Text style={styles.authCardTitle}>Enter OTP</Text>
+          <Text style={styles.otpSubtext}>We sent a 6-digit code to {phone}</Text>
+          <TextInput
+            style={styles.authInput}
+            placeholder="6-digit code"
+            placeholderTextColor="#9CA3AF"
+            value={otpCode}
+            onChangeText={setOtpCode}
+            keyboardType="numeric"
+            maxLength={6}
+          />
+          <TouchableOpacity style={styles.authBtn} onPress={verifyOTP} disabled={loading}>
+            <Text style={styles.authBtnText}>{loading ? 'Verifying...' : 'Verify'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity 
-            style={[styles.roleOption, role === 'fixer' && styles.roleActive]} 
-            onPress={() => setRole('fixer')}
-          >
-            <Text style={[styles.roleText, role === 'fixer' && styles.roleTextActive]}>🔧 Fixer</Text>
+          <TouchableOpacity onPress={resendOTP} disabled={resendTimer > 0}>
+            <Text style={styles.authLink}>
+              {resendTimer > 0 ? `Resend in ${resendTimer}s` : "Didn't receive code? Resend"}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setStep('register')}>
+            <Text style={styles.authLink}>← Back to registration</Text>
           </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.authButton} onPress={handleRegister} disabled={loading}>
-          <Text style={styles.authButtonText}>{loading ? 'Creating...' : 'Register'}</Text>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.authContainer}>
+      <StatusBar barStyle="light-content" backgroundColor="#1A8A5A" />
+      <View style={styles.authTop}>
+        <Text style={styles.authLogo}>FixZA 🔧</Text>
+        <Text style={styles.authTagline}>Join thousands of South Africans</Text>
+      </View>
+      <View style={styles.authCard}>
+        <Text style={styles.authCardTitle}>Create Account</Text>
+        <TextInput style={styles.authInput} placeholder="Full Name *" placeholderTextColor="#9CA3AF" value={fullName} onChangeText={setFullName} />
+        <TextInput style={styles.authInput} placeholder="Email *" placeholderTextColor="#9CA3AF" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
+        <TextInput style={styles.authInput} placeholder="Phone Number * (e.g. 0712345678)" placeholderTextColor="#9CA3AF" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
+        <TextInput style={styles.authInput} placeholder="Password *" placeholderTextColor="#9CA3AF" value={password} onChangeText={setPassword} secureTextEntry />
+        <View style={styles.roleRow}>
+          <TouchableOpacity style={[styles.roleBtn, role === 'customer' && styles.roleBtnActive]} onPress={() => setRole('customer')}>
+            <Text style={[styles.roleBtnText, role === 'customer' && styles.roleBtnTextActive]}>👤 Customer</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.roleBtn, role === 'fixer' && styles.roleBtnActive]} onPress={() => setRole('fixer')}>
+            <Text style={[styles.roleBtnText, role === 'fixer' && styles.roleBtnTextActive]}>🔧 Fixer</Text>
+          </TouchableOpacity>
+        </View>
+        <TouchableOpacity style={styles.authBtn} onPress={handleRegister} disabled={loading}>
+          <Text style={styles.authBtnText}>{loading ? 'Creating...' : 'Create Account'}</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.authLink}>Already have an account? Login</Text>
+          <Text style={styles.authLink}>Already have an account? <Text style={styles.authLinkBold}>Login</Text></Text>
         </TouchableOpacity>
-      </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }
 
-// ========== HOME SCREEN (Jobs) with Category Filter ==========
+// ─── HOME SCREEN ─────────────────────────────────────────────────────────────
+
 function HomeScreen({ navigation }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const [unreadCount, setUnreadCount] = useState(0);
   const { user, token } = useContext(AuthContext);
+  const categories = ['all', 'Plumbing', 'Electrical', 'Cleaning', 'Painting', 'Handyman', 'Gardening'];
 
-  const categories = ['all', 'Plumbing', 'Electrical', 'Cleaning', 'Painting', 'Handyman', 'Gardening', 'Moving', 'Automotive'];
+  const getGreeting = () => {
+    const h = new Date().getHours();
+    if (h < 12) return 'Good morning,';
+    if (h < 17) return 'Good afternoon,';
+    return 'Good evening,';
+  };
 
-  useEffect(() => {
-    loadJobs();
-    const unsubscribe = navigation.addListener('focus', loadJobs);
-    return unsubscribe;
-  }, [navigation, selectedCategory]);
+  // ─── FIX 2: Guard all API calls behind token check ───────────────────────
+  const loadUnreadCount = async () => {
+    if (!token) return;
+    try {
+      const r = await fetch(`${API_URL}/notifications/unread/count`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) return; // silently bail on 401/403
+      const d = await r.json();
+      if (d.success) setUnreadCount(d.unreadCount || 0);
+    } catch { /* silent — don't crash if backend is sleeping */ }
+  };
 
   const loadJobs = async () => {
+    if (!token) return;
     try {
       let url = user.role === 'fixer' ? `${API_URL}/my-jobs` : `${API_URL}/jobs`;
-      if (selectedCategory !== 'all') {
-        url += `?category=${selectedCategory}`;
-      }
+      if (selectedCategory !== 'all') url += `?category=${selectedCategory}`;
       const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) return;
       const data = await response.json();
       setJobs(data.jobs || []);
-    } catch (error) {
-      console.error(error);
+    } catch (e) {
+      console.warn('loadJobs failed:', e.message);
     } finally {
       setLoading(false);
     }
   };
 
+  useEffect(() => {
+    loadJobs();
+    loadUnreadCount();
+    const unsubscribe = navigation.addListener('focus', () => {
+      loadJobs();
+      loadUnreadCount();
+    });
+    return unsubscribe;
+  }, [navigation, selectedCategory]);
+
+  const getCategoryEmoji = (cat) => {
+    const map = { Plumbing: '💧', Electrical: '⚡', Cleaning: '🧹', Painting: '🎨', Handyman: '🔨', Gardening: '🌱' };
+    return map[cat] || '🔧';
+  };
+
+  const totalSpent = jobs.filter(j => j.status === 'completed').reduce((sum, j) => sum + (j.budget || 0), 0);
+
   const renderJob = ({ item }) => (
-    <TouchableOpacity 
-      style={styles.jobCard} 
-      onPress={() => navigation.navigate('JobDetails', { jobId: item.id })}
-    >
-      <View style={styles.jobHeader}>
-        <Text style={styles.jobTitle}>{item.title}</Text>
-        <View style={[styles.jobStatus, { 
-          backgroundColor: item.status === 'open' ? '#10B981' : 
-                          item.status === 'assigned' ? '#F59E0B' : 
-                          item.status === 'in_progress' ? '#3B82F6' : '#6B7280' 
-        }]}>
-          <Text style={styles.jobStatusText}>{item.status}</Text>
+    <TouchableOpacity style={styles.jobCard} onPress={() => navigation.navigate('JobDetails', { jobId: item.id })}>
+      <View style={styles.jobCardTop}>
+        <View style={styles.jobCatBadge}>
+          <Text style={styles.jobCatEmoji}>{getCategoryEmoji(item.category)}</Text>
+          <Text style={styles.jobCatText}>{item.category}</Text>
+        </View>
+        <View style={[styles.jobStatusBadge, item.status === 'open' ? styles.statusOpen : item.status === 'completed' ? styles.statusDone : styles.statusActive]}>
+          <Text style={styles.jobStatusText}>{item.status === 'open' ? 'Available' : item.status === 'completed' ? 'Done' : 'Active'}</Text>
         </View>
       </View>
-      <Text style={styles.jobCategory}>{item.category}</Text>
-      <Text style={styles.jobLocation}>📍 {item.location}</Text>
-      <View style={styles.jobFooter}>
-        <Text style={styles.jobBudget}>R{item.budget || 'Negotiable'}</Text>
-        <Text style={styles.jobCustomer}>{item.customerName}</Text>
+      <Text style={styles.jobCardTitle}>{item.title}</Text>
+      <View style={styles.jobCardMeta}>
+        <Text style={styles.jobMetaItem}>📍 {item.location}</Text>
+        <Text style={styles.jobMetaItem}>💰 R{item.budget || 'Neg'}</Text>
+        <Text style={styles.jobMetaItem}>📅 {new Date(item.createdAt).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short' })}</Text>
       </View>
+      {item.status === 'open' && (
+        <TouchableOpacity style={styles.hireBtn} onPress={() => navigation.navigate('Fixers')}>
+          <Text style={styles.hireBtnText}>🔧 Hire a Fixer</Text>
+        </TouchableOpacity>
+      )}
     </TouchableOpacity>
   );
 
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color="#1A8A5A" /></View>;
 
   return (
-    <View style={styles.container}>
-      {/* Category Filter */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryFilter}>
-        {categories.map(cat => (
-          <TouchableOpacity
-            key={cat}
-            style={[styles.categoryChipFilter, selectedCategory === cat && styles.categoryChipActive]}
-            onPress={() => setSelectedCategory(cat)}
-          >
-            <Text style={[styles.categoryChipText, selectedCategory === cat && styles.categoryChipTextActive]}>
-              {cat === 'all' ? 'All' : cat}
-            </Text>
+    <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="light-content" backgroundColor="#1A8A5A" />
+      <View style={styles.homeHeader}>
+        <View>
+          <Text style={styles.homeGreeting}>{getGreeting()}</Text>
+          <Text style={styles.homeUserName}>{user?.fullName?.split(' ')[0] || 'User'} {user?.role === 'fixer' ? '🔧' : ''}</Text>
+        </View>
+        <View style={styles.headerRight}>
+          <TouchableOpacity style={styles.headerIconBtn} onPress={() => navigation.navigate('MapTab')}>
+            <Text style={styles.headerIcon}>🗺️</Text>
           </TouchableOpacity>
-        ))}
+          <TouchableOpacity style={styles.headerIconBtn} onPress={() => navigation.navigate('Notifications')}>
+            <Text style={styles.headerIcon}>🔔</Text>
+            {unreadCount > 0 && <View style={styles.notifBadge}><Text style={styles.notifBadgeText}>{unreadCount > 9 ? '9+' : unreadCount}</Text></View>}
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
+        <View style={styles.statsGrid}>
+          <View style={styles.statCard}>
+            <Text style={styles.statNum}>{jobs.length}</Text>
+            <Text style={styles.statLbl}>Jobs Posted</Text>
+          </View>
+          <View style={styles.statCard}>
+            <Text style={styles.statNum}>{jobs.filter(j => j.status === 'completed').length}</Text>
+            <Text style={styles.statLbl}>Completed</Text>
+          </View>
+          <View style={styles.statCard}>
+            <Text style={styles.statNum}>{jobs.filter(j => j.status === 'in_progress').length}</Text>
+            <Text style={styles.statLbl}>Active</Text>
+          </View>
+          <View style={styles.statCard}>
+            <Text style={[styles.statNum, styles.statNumGreen]}>R{totalSpent.toLocaleString()}</Text>
+            <Text style={styles.statLbl}>Spent</Text>
+          </View>
+        </View>
+
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.catScroll} contentContainerStyle={{ paddingHorizontal: 16 }}>
+          {categories.map(cat => (
+            <TouchableOpacity key={cat} style={[styles.catChip, selectedCategory === cat && styles.catChipActive]} onPress={() => setSelectedCategory(cat)}>
+              <Text style={[styles.catChipText, selectedCategory === cat && styles.catChipTextActive]}>
+                {cat === 'all' ? 'All' : `${getCategoryEmoji(cat)} ${cat}`}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+
+        <View style={{ paddingHorizontal: 16 }}>
+          {jobs.length === 0 ? (
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyEmoji}>📋</Text>
+              <Text style={styles.emptyTitle}>No jobs yet</Text>
+              <Text style={styles.emptySubtitle}>Post your first job to get started</Text>
+              {user.role === 'customer' && (
+                <TouchableOpacity style={styles.emptyBtn} onPress={() => navigation.navigate('CreateJob')}>
+                  <Text style={styles.emptyBtnText}>+ Post a new job</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : (
+            jobs.map(item => (
+              <View key={item.id.toString()}>{renderJob({ item })}</View>
+            ))
+          )}
+        </View>
       </ScrollView>
-      <FlatList 
-        data={jobs} 
-        renderItem={renderJob} 
-        keyExtractor={(item) => item.id.toString()} 
-        contentContainerStyle={styles.jobList} 
-        ListEmptyComponent={<Text style={styles.emptyText}>No jobs found</Text>} 
-      />
+
       {user.role === 'customer' && (
-        <TouchableOpacity 
-          style={styles.fab} 
-          onPress={() => navigation.navigate('CreateJob')}
-        >
+        <TouchableOpacity style={styles.fab} onPress={() => navigation.navigate('CreateJob')}>
           <Text style={styles.fabText}>+</Text>
         </TouchableOpacity>
       )}
-    </View>
+    </SafeAreaView>
   );
 }
 
-// ========== CREATE JOB SCREEN ==========
+// ─── FIXERS SCREEN WITH GPS ────────────────────────────────────────────────────────────
+
+function FixersScreen({ navigation }) {
+  const [fixers, setFixers] = useState([]);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('all');
+  const [loading, setLoading] = useState(true);
+  const [location, setLocation] = useState(null);
+  const [backendDown, setBackendDown] = useState(false);
+  const { token } = useContext(AuthContext);
+
+  useEffect(() => { loadFixers(); }, []);
+
+  // ─── FIX 3: Proper error handling — nested fetches can't crash the app ────
+  const loadFixers = async () => {
+    if (!token) { setLoading(false); return; }
+    setLoading(true);
+    setBackendDown(false);
+    try {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === 'granted') {
+        let loc = await Location.getCurrentPositionAsync({});
+        setLocation(loc.coords);
+        try {
+          const response = await fetch(
+            `${API_URL}/fixers/nearby?lat=${loc.coords.latitude}&lng=${loc.coords.longitude}&radius=20`,
+            { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) }
+          );
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          setFixers(data.fixers || []);
+          return;
+        } catch (nearbyErr) {
+          console.warn('Nearby fixers failed, falling back to all fixers:', nearbyErr.message);
+        }
+      }
+      // Fallback: fetch all fixers (no GPS or nearby failed)
+      try {
+        const response = await fetch(`${API_URL}/fixers`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        setFixers(data.fixers || []);
+      } catch (fallbackErr) {
+        console.warn('Fallback fixers fetch failed:', fallbackErr.message);
+        setBackendDown(true);
+        setFixers([]);
+      }
+    } catch (error) {
+      console.warn('loadFixers outer error:', error.message);
+      setBackendDown(true);
+      setFixers([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filters = ['all', 'Top Rated', 'Online'];
+
+  const filteredFixers = fixers.filter(f => {
+    const matchSearch = !search || f.fullName?.toLowerCase().includes(search.toLowerCase()) || (f.skill || '').toLowerCase().includes(search.toLowerCase());
+    const matchFilter = filter === 'all' || (filter === 'Online' && f.online) || (filter === 'Top Rated' && (f.rating || 0) >= 4.5);
+    return matchSearch && matchFilter;
+  });
+
+  const renderStars = (rating) => '★'.repeat(Math.floor(rating || 0)) + '☆'.repeat(5 - Math.floor(rating || 0));
+
+  const renderFixer = (fixer) => (
+    <TouchableOpacity key={fixer.id} style={styles.fixerCard} onPress={() => navigation.navigate('FixerDetail', { fixer })}>
+      <View style={[styles.fixerAvatar, { backgroundColor: '#1A8A5A' }]}>
+        <Text style={styles.fixerAvatarText}>{fixer.fullName?.slice(0, 2).toUpperCase() || '?'}</Text>
+      </View>
+      <View style={styles.fixerInfo}>
+        <Text style={styles.fixerName}>{fixer.fullName}</Text>
+        <Text style={styles.fixerStars}>{renderStars(fixer.rating || 5)}</Text>
+        <View style={styles.fixerMeta}>
+          <Text style={styles.fixerMetaText}>💰 R{fixer.hourlyRate || 350}/hr</Text>
+          <Text style={styles.fixerMetaText}>🔧 {fixer.skill || 'General'}</Text>
+          {fixer.distance && <Text style={styles.fixerMetaText}>📍 {fixer.distance} km</Text>}
+        </View>
+      </View>
+      <View style={[styles.onlineDot, fixer.online ? styles.onlineGreen : styles.onlineGray]} />
+    </TouchableOpacity>
+  );
+
+  if (loading) return <View style={styles.center}><ActivityIndicator size="large" color="#1A8A5A" /></View>;
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="dark-content" backgroundColor="#F8F9FC" />
+      <View style={styles.fixersHeader}>
+        <Text style={styles.fixersTitle}>Fixers near you</Text>
+        {location && <Text style={styles.locationText}>📍 Using your current location</Text>}
+      </View>
+
+      {/* FIX 4: Show a friendly banner if the backend is sleeping */}
+      {backendDown && (
+        <View style={styles.backendDownBanner}>
+          <Text style={styles.backendDownText}>⚠️ Server is starting up — please try again in a moment</Text>
+          <TouchableOpacity onPress={loadFixers} style={styles.retryBtn}>
+            <Text style={styles.retryBtnText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      <View style={styles.searchBar}>
+        <Text style={styles.searchDot}>🔍</Text>
+        <TextInput style={styles.searchInput} placeholder="Search by name or skill..." placeholderTextColor="#9CA3AF" value={search} onChangeText={setSearch} />
+      </View>
+
+      <View style={styles.filterRow}>
+        {filters.map(f => (
+          <TouchableOpacity key={f} style={[styles.filterChip, filter === f && styles.filterChipActive]} onPress={() => setFilter(f)}>
+            <Text style={[styles.filterChipText, filter === f && styles.filterChipTextActive]}>
+              {f === 'Top Rated' ? '⭐ Top Rated' : f === 'Online' ? '⚡ Online' : f}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 100 }}>
+        {filteredFixers.map(renderFixer)}
+        {filteredFixers.length === 0 && !backendDown && (
+          <View style={styles.emptyBox}>
+            <Text style={styles.emptyEmoji}>🔧</Text>
+            <Text style={styles.emptyTitle}>No fixers found</Text>
+            <Text style={styles.emptySubtitle}>Try a different search</Text>
+          </View>
+        )}
+      </ScrollView>
+
+      <TouchableOpacity style={styles.postJobBtnFixed} onPress={() => navigation.navigate('CreateJob')}>
+        <Text style={styles.postJobBtnText}>+ Post a new job</Text>
+      </TouchableOpacity>
+    </SafeAreaView>
+  );
+}
+
+// ─── MAP SCREEN ───────────────────────────────────────────────────────────────
+
+function MapScreen({ navigation }) {
+  const mockNearbyFixers = [
+    { id: 1, fullName: 'John Dlamini', initials: 'JD', color: '#1A8A5A', distance: '1.2 km', rate: 350, online: true, skill: 'Plumbing' },
+    { id: 2, fullName: 'Thandi Ndlovu', initials: 'TN', color: '#F59E0B', distance: '2.4 km', rate: 400, online: true, skill: 'Electrical' },
+  ];
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="light-content" backgroundColor="#1A8A5A" />
+      <View style={styles.mapHeader}>
+        <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.mapBack}>←</Text></TouchableOpacity>
+        <Text style={styles.mapTitle}>Nearby services</Text>
+        <View style={{ width: 32 }} />
+      </View>
+
+      <View style={styles.mapPlaceholder}>
+        <View style={styles.mapLegend}>
+          <View style={styles.legendRow}><View style={[styles.legendDot, { backgroundColor: '#F59E0B' }]} /><Text style={styles.legendText}>Jobs (3)</Text></View>
+          <View style={styles.legendRow}><View style={[styles.legendDot, { backgroundColor: '#1A8A5A' }]} /><Text style={styles.legendText}>Fixers (2)</Text></View>
+        </View>
+        <View style={{ flex: 1, position: 'relative', justifyContent: 'center', alignItems: 'center' }}>
+          <Text style={styles.mapAreaLabel}>Johannesburg area</Text>
+          <View style={[styles.mapPin, { top: '20%', left: '25%', backgroundColor: '#F59E0B' }]} />
+          <View style={[styles.mapPin, { top: '35%', left: '55%', backgroundColor: '#1A8A5A' }]} />
+          <View style={[styles.mapPin, { top: '35%', left: '48%', backgroundColor: '#EF4444', width: 14, height: 14, borderRadius: 7 }]} />
+          <View style={[styles.mapPin, { top: '60%', left: '35%', backgroundColor: '#F59E0B' }]} />
+          <View style={[styles.mapPin, { top: '65%', right: '15%', backgroundColor: '#EF4444', width: 14, height: 14, borderRadius: 7 }]} />
+        </View>
+      </View>
+
+      <View style={styles.nearbyPanel}>
+        <Text style={styles.nearbyTitle}>Nearby fixers</Text>
+        {mockNearbyFixers.map(fixer => (
+          <TouchableOpacity key={fixer.id} style={styles.nearbyFixerCard} onPress={() => navigation.navigate('FixerDetail', { fixer })}>
+            <View style={[styles.nearbyAvatar, { backgroundColor: fixer.color }]}>
+              <Text style={styles.nearbyAvatarText}>{fixer.initials}</Text>
+            </View>
+            <View style={styles.nearbyInfo}>
+              <Text style={styles.nearbyName}>{fixer.fullName}</Text>
+              <Text style={styles.nearbyMeta}>{fixer.distance} away · R{fixer.rate}/hr</Text>
+            </View>
+            <View style={[styles.onlineDot, fixer.online ? styles.onlineGreen : styles.onlineGray]} />
+          </TouchableOpacity>
+        ))}
+      </View>
+    </SafeAreaView>
+  );
+}
+
+// ─── CHAT SCREENS (API-CONNECTED) ─────────────────────────────────────────────
+
+function ChatListScreen({ navigation }) {
+  const { user, token } = useContext(AuthContext);
+  const [conversations, setConversations] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadConversations();
+    const unsub = navigation.addListener('focus', loadConversations);
+    return unsub;
+  }, [navigation]);
+
+  const loadConversations = async () => {
+    if (!token) { setLoading(false); return; }
+    try {
+      const url = `${API_URL}/my-jobs`;
+      const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) { setLoading(false); return; }
+      const data = await response.json();
+      const jobsWithMessages = (data.jobs || []).filter(j => j.fixerId || j.status !== 'open');
+      setConversations(jobsWithMessages);
+    } catch (e) {
+      console.warn('loadConversations failed:', e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getInitials = (name) => name ? name.slice(0, 2).toUpperCase() : '?';
+  const avatarColors = ['#1A8A5A', '#F59E0B', '#8B5CF6', '#EF4444', '#06B6D4', '#10B981'];
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="dark-content" backgroundColor="#F8F9FC" />
+      <View style={styles.chatListHeader}>
+        <Text style={styles.chatListTitle}>Messages</Text>
+      </View>
+      {loading ? (
+        <View style={styles.center}><ActivityIndicator size="large" color="#1A8A5A" /></View>
+      ) : conversations.length === 0 ? (
+        <View style={styles.emptyBox}>
+          <Text style={styles.emptyEmoji}>💬</Text>
+          <Text style={styles.emptyTitle}>No conversations yet</Text>
+          <Text style={styles.emptySubtitle}>Accept a job or post one to start chatting</Text>
+        </View>
+      ) : (
+        <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8 }}>
+          {conversations.map((job, idx) => {
+            const otherName = user.role === 'customer' ? (job.fixerName || 'Waiting for fixer') : job.customerName;
+            const color = avatarColors[idx % avatarColors.length];
+            return (
+              <TouchableOpacity
+                key={job.id}
+                style={styles.chatListCard}
+                onPress={() => navigation.navigate('ChatDetail', {
+                  job,
+                  otherUser: { fullName: otherName, id: user.role === 'customer' ? job.fixerId : job.customerId },
+                })}
+              >
+                <View style={[styles.chatAvatar, { backgroundColor: color }]}>
+                  <Text style={styles.chatAvatarText}>{getInitials(otherName)}</Text>
+                </View>
+                <View style={styles.chatInfo}>
+                  <View style={styles.chatInfoTop}>
+                    <Text style={styles.chatName}>{otherName || 'Unassigned'}</Text>
+                    <Text style={styles.chatTime}>{new Date(job.createdAt).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short' })}</Text>
+                  </View>
+                  <Text style={styles.chatJob}>{job.title}</Text>
+                  <Text style={styles.chatLastMsg} numberOfLines={1}>Tap to open conversation</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      )}
+    </SafeAreaView>
+  );
+}
+
+function ChatDetailScreen({ route, navigation }) {
+  const { job, otherUser, fixer } = route.params || {};
+  const jobObj = job || null;
+  const jobId = jobObj?.id || null;
+  const otherPerson = otherUser || fixer;
+
+  const { user, token } = useContext(AuthContext);
+  const [message, setMessage] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(!!jobId);
+  const [showPayment, setShowPayment] = useState(false);
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const scrollRef = React.useRef(null);
+
+  useEffect(() => {
+    if (jobId) {
+      loadMessages();
+      const interval = setInterval(loadMessages, 8000);
+      return () => clearInterval(interval);
+    } else {
+      setMessages([
+        { id: 1, content: `Hi! I'm available for ${fixer?.skill || 'your job'}.`, senderId: otherPerson?.id || 0, createdAt: new Date().toISOString() },
+      ]);
+      setLoading(false);
+    }
+  }, [jobId]);
+
+  const loadMessages = async () => {
+    if (!jobId || !token) return;
+    try {
+      const response = await fetch(`${API_URL}/messages/${jobId}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data.success) setMessages(data.messages || []);
+    } catch (e) {
+      console.warn('loadMessages failed:', e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sendMessage = async () => {
+    if (!message.trim()) return;
+    const receiverId = otherPerson?.id;
+    if (!jobId || !receiverId) {
+      setMessages(prev => [...prev, { id: Date.now(), content: message, senderId: user.id, createdAt: new Date().toISOString() }]);
+      setMessage('');
+      return;
+    }
+    const tempMsg = { id: Date.now(), content: message, senderId: user.id, createdAt: new Date().toISOString() };
+    setMessages(prev => [...prev, tempMsg]);
+    setMessage('');
+    try {
+      await fetch(`${API_URL}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ jobId, receiverId, content: message }),
+      });
+    } catch (e) { console.warn('sendMessage failed:', e.message); }
+  };
+
+  const markPaid = async (method) => {
+    if (!jobId) { Alert.alert('Info', 'Payment tracked once job is assigned'); return; }
+    setPaymentLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/jobs/${jobId}/payment`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ paymentStatus: 'paid', paymentMethod: method }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        Alert.alert('Payment Recorded ✅', `Payment marked as paid via ${method}`);
+        setShowPayment(false);
+      } else {
+        Alert.alert('Error', data.error || 'Failed to update payment');
+      }
+    } catch { Alert.alert('Error', 'Connection failed'); }
+    finally { setPaymentLoading(false); }
+  };
+
+  const reportUser = () => {
+    if (!otherPerson?.id) return;
+    Alert.alert('Report User', 'Why are you reporting this user?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Inappropriate behaviour', onPress: () => submitReport('Inappropriate behaviour') },
+      { text: 'No-show / Fraud', onPress: () => submitReport('No-show or fraud') },
+      { text: 'Other', onPress: () => submitReport('Other') },
+    ]);
+  };
+
+  const submitReport = async (reason) => {
+    try {
+      await fetch(`${API_URL}/users/${otherPerson.id}/report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ reason }),
+      });
+      Alert.alert('Reported', 'Thank you. We will investigate within 24 hours.');
+    } catch { Alert.alert('Error', 'Failed to submit report'); }
+  };
+
+  if (showPayment) {
+    const budget = jobObj?.budget || otherPerson?.rate || 350;
+    const fee = Math.round(budget * 0.15);
+    return (
+      <SafeAreaView style={styles.screen}>
+        <View style={styles.chatHeader}>
+          <TouchableOpacity onPress={() => setShowPayment(false)}><Text style={styles.chatBack}>←</Text></TouchableOpacity>
+          <Text style={styles.chatHeaderTitle}>Payment</Text>
+          <View style={{ width: 32 }} />
+        </View>
+        <ScrollView>
+          <View style={styles.paymentCard}>
+            <Text style={styles.paymentServiceLabel}>Service</Text>
+            <Text style={styles.paymentServiceName}>{jobObj?.title || 'Service'} · {otherPerson?.fullName}</Text>
+            <View style={styles.paymentAmountBox}>
+              <Text style={styles.paymentAmountLabel}>Total amount</Text>
+              <Text style={styles.paymentAmount}>R{budget + fee}</Text>
+              <Text style={styles.paymentFeeNote}>Includes 15% platform fee (R{fee})</Text>
+            </View>
+            {jobObj?.paymentStatus === 'paid' ? (
+              <View style={[styles.payBtn, { backgroundColor: '#E8F5E9' }]}>
+                <Text style={[styles.payBtnText, { color: '#1A8A5A' }]}>✅ Already Paid</Text>
+              </View>
+            ) : (
+              <>
+                <TouchableOpacity style={styles.payBtn} onPress={() => markPaid('card')} disabled={paymentLoading}>
+                  <Text style={styles.payBtnText}>💳  Pay with Card</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.payBtn, styles.payBtnEFT]} onPress={() => markPaid('eft')} disabled={paymentLoading}>
+                  <Text style={styles.payBtnText}>🏦  Pay with EFT</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.payBtn, { borderColor: '#9CA3AF' }]} onPress={() => markPaid('cash')} disabled={paymentLoading}>
+                  <Text style={styles.payBtnText}>💵  Pay with Cash</Text>
+                </TouchableOpacity>
+              </>
+            )}
+            <Text style={styles.paymentSecure}>🔒 Payments are tracked securely</Text>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={[styles.screen, { justifyContent: 'space-between' }]}>
+      <View style={styles.chatHeader}>
+        <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.chatBack}>←</Text></TouchableOpacity>
+        <View style={styles.chatHeaderCenter}>
+          <Text style={styles.chatHeaderName}>{otherPerson?.fullName || 'Chat'}</Text>
+          <Text style={styles.chatHeaderSub}>{jobObj?.title || 'Direct message'}</Text>
+        </View>
+        <View style={{ flexDirection: 'row', gap: 4 }}>
+          <TouchableOpacity onPress={() => setShowPayment(true)} style={styles.payIconBtn}>
+            <Text style={styles.payIconText}>💳</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={reportUser} style={styles.payIconBtn}>
+            <Text style={styles.payIconText}>⚠️</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {loading ? (
+        <View style={styles.center}><ActivityIndicator size="large" color="#1A8A5A" /></View>
+      ) : (
+        <ScrollView
+          ref={scrollRef}
+          style={styles.messagesList}
+          contentContainerStyle={{ padding: 16 }}
+          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+        >
+          {messages.length === 0 && (
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyEmoji}>💬</Text>
+              <Text style={styles.emptyTitle}>No messages yet</Text>
+              <Text style={styles.emptySubtitle}>Start the conversation!</Text>
+            </View>
+          )}
+          {messages.map(msg => {
+            const mine = msg.senderId === user.id;
+            const time = new Date(msg.createdAt).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' });
+            return (
+              <View key={msg.id} style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
+                <View style={[styles.msgBubble, mine ? styles.msgBubbleMine : styles.msgBubbleTheirs]}>
+                  <Text style={[styles.msgText, mine ? styles.msgTextMine : styles.msgTextTheirs]}>{msg.content}</Text>
+                  <Text style={[styles.msgTime, mine ? styles.msgTimeMine : styles.msgTimeTheirs]}>{time}</Text>
+                </View>
+              </View>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      <View style={styles.msgInputRow}>
+        <TextInput
+          style={styles.msgInput}
+          placeholder="Type a message..."
+          placeholderTextColor="#9CA3AF"
+          value={message}
+          onChangeText={setMessage}
+          multiline
+        />
+        <TouchableOpacity style={styles.sendBtn} onPress={sendMessage}>
+          <Text style={styles.sendBtnText}>↑</Text>
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function ProfileScreen({ navigation }) {
+  const { user, token, signOut } = useContext(AuthContext);
+  const [fixerProfile, setFixerProfile] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [skills, setSkills] = useState('');
+  const [experience, setExperience] = useState('');
+  const [education, setEducation] = useState('');
+  const [hourlyRate, setHourlyRate] = useState('');
+  const [bio, setBio] = useState('');
+  const [pricingType, setPricingType] = useState('quote');
+  const [isAvailable, setIsAvailable] = useState(true);
+  const [profileImage, setProfileImage] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const getInitials = (name) => name ? name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : '?';
+
+  useEffect(() => { loadFixerProfile(); }, []);
+
+  const loadFixerProfile = async () => {
+    if (user?.role !== 'fixer' || !token) return;
+    try {
+      const response = await fetch(`${API_URL}/fixers/${user.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data.success && data.fixer) {
+        setFixerProfile(data.fixer);
+        setSkills(data.fixer.skills || '');
+        setExperience(data.fixer.experience || '');
+        setEducation(data.fixer.education || '');
+        setHourlyRate(data.fixer.hourlyRate?.toString() || '');
+        setBio(data.fixer.bio || '');
+        setPricingType(data.fixer.pricingType || 'quote');
+        setIsAvailable(data.fixer.isAvailable !== 0);
+      }
+    } catch (error) {
+      console.warn('Load fixer profile error:', error.message);
+    }
+  };
+
+  const updateFixerProfile = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/fixers/profile`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ skills, experience, education, hourlyRate: hourlyRate ? parseInt(hourlyRate) : null, bio, pricingType, isAvailable }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        Alert.alert('Success', 'Profile updated!');
+        setEditing(false);
+        loadFixerProfile();
+      } else {
+        Alert.alert('Error', data.error || 'Failed to update profile');
+      }
+    } catch {
+      Alert.alert('Error', 'Failed to update profile');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const pickProfileImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission Needed', 'Please grant camera roll permission to upload photo');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (!result.canceled) {
+      setProfileImage(result.assets[0].uri);
+      Alert.alert('Success', 'Profile photo updated!');
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="dark-content" backgroundColor="#F8F9FC" />
+      <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+        <View style={styles.profileHeader}>
+          <Text style={styles.profileHeaderTitle}>Profile</Text>
+        </View>
+
+        <View style={styles.profileHero}>
+          <TouchableOpacity onPress={pickProfileImage} style={styles.profileAvatarWrapper}>
+            <View style={styles.profileBigAvatar}>
+              {profileImage ? (
+                <Image source={{ uri: profileImage }} style={styles.profileAvatarImage} />
+              ) : (
+                <Text style={styles.profileBigAvatarText}>{getInitials(user?.fullName)}</Text>
+              )}
+            </View>
+            <View style={styles.editAvatarBadge}>
+              <Text style={styles.editAvatarText}>📷</Text>
+            </View>
+          </TouchableOpacity>
+          <Text style={styles.profileName}>{user?.fullName}</Text>
+          <View style={styles.profileRoleBadge}>
+            <Text style={styles.profileRoleText}>{user?.role === 'fixer' ? '🔧 Service Provider' : '👤 Customer'}</Text>
+          </View>
+          <Text style={styles.profileEmail}>{user?.email}</Text>
+          {user?.phone && <Text style={styles.profilePhone}>📞 {user.phone}</Text>}
+        </View>
+
+        {user?.role === 'fixer' && (
+          <View style={styles.fixerProfileSection}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Professional Details</Text>
+              {!editing && (
+                <TouchableOpacity onPress={() => setEditing(true)}>
+                  <Text style={styles.editBtnText}>Edit</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {!editing ? (
+              <>
+                <View style={styles.infoRow}><Text style={styles.infoLabel}>⭐ Rating</Text><Text style={styles.infoValue}>{fixerProfile?.rating || 0} ★ ({fixerProfile?.totalReviews || 0} reviews)</Text></View>
+                <View style={styles.infoRow}><Text style={styles.infoLabel}>💰 Hourly Rate</Text><Text style={styles.infoValue}>R{fixerProfile?.hourlyRate || 'Not set'}/hr</Text></View>
+                <View style={styles.infoRow}><Text style={styles.infoLabel}>🔧 Skills</Text><Text style={styles.infoValue}>{fixerProfile?.skills || 'Not specified'}</Text></View>
+                <View style={styles.infoRow}><Text style={styles.infoLabel}>📚 Experience</Text><Text style={styles.infoValue}>{fixerProfile?.experience || 'Not specified'}</Text></View>
+                <View style={styles.infoRow}><Text style={styles.infoLabel}>🎓 Education</Text><Text style={styles.infoValue}>{fixerProfile?.education || 'Not specified'}</Text></View>
+                <View style={styles.infoRow}><Text style={styles.infoLabel}>📝 Bio</Text><Text style={styles.infoValue}>{fixerProfile?.bio || 'No bio yet'}</Text></View>
+                <View style={styles.infoRow}><Text style={styles.infoLabel}>✅ Completed Jobs</Text><Text style={styles.infoValue}>{fixerProfile?.completedJobs || 0}</Text></View>
+                <View style={styles.infoRow}><Text style={styles.infoLabel}>💵 Pricing Type</Text><Text style={styles.infoValue}>{fixerProfile?.pricingType === 'fixed' ? 'Fixed Rate' : 'Quote-Based'}</Text></View>
+                <View style={styles.infoRow}><Text style={styles.infoLabel}>🟢 Availability</Text><Text style={[styles.infoValue, { color: fixerProfile?.isAvailable ? '#10B981' : '#EF4444' }]}>{fixerProfile?.isAvailable ? 'Available' : 'Not Available'}</Text></View>
+              </>
+            ) : (
+              <View style={styles.editForm}>
+                <TextInput style={styles.editInput} placeholder="Skills (e.g., Plumbing, Electrical)" placeholderTextColor="#9CA3AF" value={skills} onChangeText={setSkills} multiline />
+                <TextInput style={styles.editInput} placeholder="Experience (e.g., 5 years in plumbing)" placeholderTextColor="#9CA3AF" value={experience} onChangeText={setExperience} multiline />
+                <TextInput style={styles.editInput} placeholder="Education/Certifications" placeholderTextColor="#9CA3AF" value={education} onChangeText={setEducation} multiline />
+                <TextInput style={styles.editInput} placeholder="Hourly Rate (R)" placeholderTextColor="#9CA3AF" value={hourlyRate} onChangeText={setHourlyRate} keyboardType="numeric" />
+                <TextInput style={[styles.editInput, styles.bioInput]} placeholder="Bio / About me" placeholderTextColor="#9CA3AF" value={bio} onChangeText={setBio} multiline numberOfLines={3} />
+                <Text style={{ fontSize: 13, color: '#374151', fontWeight: '600', marginBottom: 8 }}>Pricing Type</Text>
+                <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
+                  <TouchableOpacity style={[styles.roleBtn, pricingType === 'fixed' && styles.roleBtnActive]} onPress={() => setPricingType('fixed')}>
+                    <Text style={[styles.roleBtnText, pricingType === 'fixed' && styles.roleBtnTextActive]}>💵 Fixed Rate</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.roleBtn, pricingType === 'quote' && styles.roleBtnActive]} onPress={() => setPricingType('quote')}>
+                    <Text style={[styles.roleBtnText, pricingType === 'quote' && styles.roleBtnTextActive]}>📋 Quote-Based</Text>
+                  </TouchableOpacity>
+                </View>
+                <TouchableOpacity style={[styles.roleBtn, isAvailable && styles.roleBtnActive, { marginBottom: 14 }]} onPress={() => setIsAvailable(!isAvailable)}>
+                  <Text style={[styles.roleBtnText, isAvailable && styles.roleBtnTextActive]}>{isAvailable ? '✅ Available for Jobs' : '❌ Not Available'}</Text>
+                </TouchableOpacity>
+                <View style={styles.editButtons}>
+                  <TouchableOpacity style={styles.cancelEditBtn} onPress={() => setEditing(false)}>
+                    <Text style={styles.cancelEditText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.saveEditBtn} onPress={updateFixerProfile} disabled={loading}>
+                    <Text style={styles.saveEditText}>{loading ? 'Saving...' : 'Save'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+
+        <View style={styles.profileSection}>
+          <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('Settings', 'Account settings coming soon!')}>
+            <Text style={styles.profileMenuIcon}>⚙️</Text><Text style={styles.profileMenuLabel}>Account Settings</Text><Text style={styles.profileMenuArrow}>›</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.profileMenuItem} onPress={() => navigation.navigate('Notifications')}>
+            <Text style={styles.profileMenuIcon}>🔔</Text><Text style={styles.profileMenuLabel}>Notifications</Text><Text style={styles.profileMenuArrow}>›</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.profileMenuItem} onPress={() => navigation.navigate('JobHistory')}>
+            <Text style={styles.profileMenuIcon}>📋</Text><Text style={styles.profileMenuLabel}>Job History</Text><Text style={styles.profileMenuArrow}>›</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('Payments', 'PayFast & Yoco coming in v1.1!')}>
+            <Text style={styles.profileMenuIcon}>💳</Text><Text style={styles.profileMenuLabel}>Payment Methods</Text><Text style={styles.profileMenuArrow}>›</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('Help', 'FAQ and support coming soon!')}>
+            <Text style={styles.profileMenuIcon}>❓</Text><Text style={styles.profileMenuLabel}>Help & Support</Text><Text style={styles.profileMenuArrow}>›</Text>
+          </TouchableOpacity>
+          {user?.role === 'admin' && (
+            <TouchableOpacity style={styles.profileMenuItem} onPress={() => navigation.navigate('AdminPanel')}>
+              <Text style={styles.profileMenuIcon}>🛡️</Text><Text style={styles.profileMenuLabel}>Admin Panel</Text><Text style={styles.profileMenuArrow}>›</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <TouchableOpacity style={styles.logoutBtn} onPress={signOut}>
+          <Text style={styles.logoutBtnText}>🚪 Logout</Text>
+        </TouchableOpacity>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+// ─── CREATE JOB SCREEN ────────────────────────────────────────────────────────
+
 function CreateJobScreen({ navigation }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('');
   const [location, setLocation] = useState('');
   const [budget, setBudget] = useState('');
+  const [photoUri, setPhotoUri] = useState(null);
   const [loading, setLoading] = useState(false);
-  const { token, signOut, user } = useContext(AuthContext);
+  const { token } = useContext(AuthContext);
 
-  const categories = ['Plumbing', 'Electrical', 'Cleaning', 'Painting', 'Handyman', 'Gardening', 'Moving', 'Automotive'];
+  const categories = ['Plumbing', 'Electrical', 'Cleaning', 'Painting', 'Handyman', 'Gardening'];
+  const catEmojis = { Plumbing: '💧', Electrical: '⚡', Cleaning: '🧹', Painting: '🎨', Handyman: '🔨', Gardening: '🌱' };
+
+  const pickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') { Alert.alert('Permission Needed', 'Please grant camera roll access to upload photos'); return; }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [4, 3], quality: 0.8 });
+    if (!result.canceled) setPhotoUri(result.assets[0].uri);
+  };
 
   const handleSubmit = async () => {
-    if (!title || !description || !category || !location) {
-      Alert.alert('Error', 'Please fill all required fields');
-      return;
-    }
+    if (!title || !description || !category || !location) { Alert.alert('Error', 'Please fill all required fields'); return; }
     setLoading(true);
     try {
       const response = await fetch(`${API_URL}/jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ 
-          title, 
-          description, 
-          category, 
-          location, 
-          budget: budget ? parseInt(budget) : null 
-        }),
+        body: JSON.stringify({ title, description, category, location, budget: budget ? parseInt(budget) : null, photo_url: photoUri || null }),
       });
       const data = await response.json();
       if (data.success) {
-        Alert.alert('Success', 'Job posted!', [{ text: 'OK', onPress: () => navigation.goBack() }]);
+        Alert.alert('Job Posted! 🎉', 'Fixers in your area will be notified', [{ text: 'OK', onPress: () => navigation.goBack() }]);
       } else {
-        Alert.alert('Error', data.error);
+        Alert.alert('Error', data.error || 'Failed to post job');
       }
-    } catch (error) {
-      Alert.alert('Error', 'Network error');
+    } catch {
+      Alert.alert('Error', 'Network error — please check your connection');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="light-content" backgroundColor="#1A8A5A" />
       <View style={styles.createHeader}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButtonHeader}>
-          <Text style={styles.backButtonHeaderText}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.createHeaderTitle}>Post a New Job</Text>
-        <TouchableOpacity onPress={() => {
-          Alert.alert('Logout', 'Are you sure you want to logout?', [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Logout', onPress: () => signOut() }
-          ]);
-        }} style={styles.logoutButtonHeader}>
-          <Text style={styles.logoutButtonHeaderText}>Logout</Text>
-        </TouchableOpacity>
+        <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.createBack}>← Back</Text></TouchableOpacity>
+        <Text style={styles.createTitle}>Post a New Job</Text>
+        <View style={{ width: 60 }} />
       </View>
-      <ScrollView contentContainerStyle={styles.createForm}>
-        <TextInput 
-          style={styles.input} 
-          placeholder="Job Title *" 
-          value={title} 
-          onChangeText={setTitle} 
-        />
-        <TextInput 
-          style={[styles.input, styles.textArea]} 
-          placeholder="Description *" 
-          value={description} 
-          onChangeText={setDescription} 
-          multiline 
-          numberOfLines={4} 
-        />
-        <Text style={styles.sectionLabel}>Category *</Text>
-        <View style={styles.categoryGrid}>
+      <ScrollView contentContainerStyle={styles.createForm} showsVerticalScrollIndicator={false}>
+        <TouchableOpacity style={styles.photoUploadBtn} onPress={pickImage}>
+          <Text style={styles.photoUploadIcon}>📸</Text>
+          <Text style={styles.photoUploadText}>{photoUri ? 'Change Photo' : 'Add Photo (Optional)'}</Text>
+        </TouchableOpacity>
+        {photoUri && (
+          <View style={{ position: 'relative' }}>
+            <Image source={{ uri: photoUri }} style={styles.jobPhotoPreview} />
+            <TouchableOpacity style={styles.removePhotoBtn} onPress={() => setPhotoUri(null)}>
+              <Text style={styles.removePhotoBtnText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        <Text style={styles.formLabel}>Job Title *</Text>
+        <TextInput style={styles.formInput} placeholder="e.g. Fix leaking tap" placeholderTextColor="#9CA3AF" value={title} onChangeText={setTitle} />
+        <Text style={styles.formLabel}>Description *</Text>
+        <TextInput style={[styles.formInput, styles.formTextArea]} placeholder="Describe the work needed..." placeholderTextColor="#9CA3AF" value={description} onChangeText={setDescription} multiline numberOfLines={4} />
+        <Text style={styles.formLabel}>Category *</Text>
+        <View style={styles.catGrid}>
           {categories.map(cat => (
-            <TouchableOpacity 
-              key={cat} 
-              style={[styles.categoryChip, category === cat && styles.categoryActive]} 
-              onPress={() => setCategory(cat)}
-            >
-              <Text style={[styles.categoryText, category === cat && styles.categoryTextActive]}>{cat}</Text>
+            <TouchableOpacity key={cat} style={[styles.catGridItem, category === cat && styles.catGridItemActive]} onPress={() => setCategory(cat)}>
+              <Text style={styles.catGridEmoji}>{catEmojis[cat]}</Text>
+              <Text style={[styles.catGridText, category === cat && styles.catGridTextActive]}>{cat}</Text>
             </TouchableOpacity>
           ))}
         </View>
-        <TextInput 
-          style={styles.input} 
-          placeholder="Location *" 
-          value={location} 
-          onChangeText={setLocation} 
-        />
-        <TextInput 
-          style={styles.input} 
-          placeholder="Budget (R) - Optional" 
-          value={budget} 
-          onChangeText={setBudget} 
-          keyboardType="numeric" 
-        />
-        <TouchableOpacity style={styles.submitButton} onPress={handleSubmit} disabled={loading}>
-          <Text style={styles.submitButtonText}>{loading ? 'Posting...' : 'Post Job'}</Text>
+        <Text style={styles.formLabel}>Location *</Text>
+        <TextInput style={styles.formInput} placeholder="e.g. Sandton, Johannesburg" placeholderTextColor="#9CA3AF" value={location} onChangeText={setLocation} />
+        <Text style={styles.formLabel}>Budget (R) — Optional</Text>
+        <TextInput style={styles.formInput} placeholder="Leave blank if you want quotes from fixers" placeholderTextColor="#9CA3AF" value={budget} onChangeText={setBudget} keyboardType="numeric" />
+        <TouchableOpacity style={styles.submitBtn} onPress={handleSubmit} disabled={loading}>
+          <Text style={styles.submitBtnText}>{loading ? 'Posting...' : '📤 Post Job'}</Text>
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-// ========== PROFILE SCREEN ==========
-function ProfileScreen() {
-  const { user, signOut } = useContext(AuthContext);
+// ─── RATE JOB SCREEN ─────────────────────────────────────────────────────────
+
+function RateJobScreen({ route, navigation }) {
+  const { jobId } = route.params;
+  const [rating, setRating] = useState(0);
+  const [review, setReview] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const { token } = useContext(AuthContext);
+  const ratingLabels = ['', 'Poor', 'Fair', 'Good', 'Great', 'Excellent!'];
+
+  const submitReview = async () => {
+    if (rating === 0) { Alert.alert('Error', 'Please select a star rating'); return; }
+    setSubmitting(true);
+    try {
+      const response = await fetch(`${API_URL}/jobs/${jobId}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ rating, review }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        Alert.alert('Thank You! ⭐', 'Your review helps the FixZA community', [{ text: 'Done', onPress: () => navigation.goBack() }]);
+      } else {
+        Alert.alert('Error', data.error || 'Failed to submit review');
+      }
+    } catch { Alert.alert('Error', 'Connection failed'); }
+    finally { setSubmitting(false); }
+  };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.profileHeader}>
-        <Text style={styles.profileName}>{user?.fullName}</Text>
-        <Text style={styles.profileRole}>{user?.role === 'fixer' ? '🔧 Service Provider' : '👤 Customer'}</Text>
-        <Text style={styles.profileEmail}>{user?.email}</Text>
-        <TouchableOpacity style={styles.logoutButton} onPress={signOut}>
-          <Text style={styles.logoutButtonText}>Logout</Text>
-        </TouchableOpacity>
+    <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="light-content" backgroundColor="#1A8A5A" />
+      <View style={styles.createHeader}>
+        <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.createBack}>← Back</Text></TouchableOpacity>
+        <Text style={styles.createTitle}>Rate Your Experience</Text>
+        <View style={{ width: 60 }} />
       </View>
+      <ScrollView contentContainerStyle={styles.createForm}>
+        <View style={styles.rateContainer}>
+          <Text style={styles.rateTitle}>How was your experience?</Text>
+          <Text style={styles.rateSubtitle}>Your honest feedback helps keep FixZA trustworthy</Text>
+          <View style={styles.rateStarsRow}>
+            {[1, 2, 3, 4, 5].map(i => (
+              <TouchableOpacity key={i} onPress={() => setRating(i)} style={{ padding: 4 }}>
+                <Text style={[styles.rateStar, i <= rating && styles.rateStarFilled]}>{i <= rating ? '★' : '☆'}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {rating > 0 && <Text style={styles.ratingLabel}>{ratingLabels[rating]}</Text>}
+          <TextInput style={[styles.formInput, styles.rateReviewInput]} placeholder="Write a review (optional)" placeholderTextColor="#9CA3AF" value={review} onChangeText={setReview} multiline numberOfLines={4} />
+          <TouchableOpacity style={styles.submitBtn} onPress={submitReview} disabled={submitting}>
+            <Text style={styles.submitBtnText}>{submitting ? 'Submitting...' : '⭐ Submit Review'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={{ marginTop: 16, alignItems: 'center' }}>
+            <Text style={{ color: '#9CA3AF', fontSize: 14 }}>Skip for now</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
-// ========== JOB DETAILS SCREEN with Share Button ==========
+// ─── JOB DETAILS SCREEN ───────────────────────────────────────────────────────
+
 function JobDetailsScreen({ route, navigation }) {
   const { jobId } = route.params;
   const [job, setJob] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [quoteAmount, setQuoteAmount] = useState('');
+  const [quoteMsg, setQuoteMsg] = useState('');
+  const [sendingQuote, setSendingQuote] = useState(false);
   const { user, token } = useContext(AuthContext);
 
   useEffect(() => { loadJob(); }, []);
 
   const loadJob = async () => {
     try {
-      const response = await fetch(`${API_URL}/jobs/${jobId}`, { 
-        headers: { Authorization: `Bearer ${token}` } 
-      });
+      const response = await fetch(`${API_URL}/jobs/${jobId}`, { headers: { Authorization: `Bearer ${token}` } });
       const data = await response.json();
       setJob(data.job);
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
   };
 
   const shareJob = async () => {
     try {
-      const result = await Share.share({
-        message: `🔧 FixZA Job: ${job.title}\n\n📋 Description: ${job.description}\n📍 Location: ${job.location}\n💰 Budget: R${job.budget || 'Negotiable'}\n\nDownload FixZA app to apply!`,
-        url: 'https://fixza-api.onrender.com'
-      });
-      if (result.action === Share.sharedAction) {
-        console.log('Job shared successfully');
-      }
-    } catch (error) {
-      console.error('Error sharing:', error);
-    }
+      await Share.share({ message: `🔧 FixZA Job: ${job.title}\n📍 ${job.location}\n💰 R${job.budget || 'Negotiable'}\n\nDownload FixZA!` });
+    } catch (e) { console.error(e); }
   };
 
   const acceptJob = async () => {
     try {
-      const response = await fetch(`${API_URL}/jobs/${jobId}/accept`, { 
-        method: 'PATCH', 
-        headers: { 
-          'Content-Type': 'application/json', 
-          Authorization: `Bearer ${token}` 
-        } 
+      const response = await fetch(`${API_URL}/jobs/${jobId}/accept`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json();
+      if (data.success) { Alert.alert('Success', 'Job accepted!'); loadJob(); }
+      else { Alert.alert('Error', data.error || 'Failed to accept job'); }
+    } catch { Alert.alert('Error', 'Failed to accept job'); }
+  };
+
+  const sendQuote = async () => {
+    if (!quoteAmount) { Alert.alert('Error', 'Please enter a quote amount'); return; }
+    setSendingQuote(true);
+    try {
+      const response = await fetch(`${API_URL}/jobs/${jobId}/quote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ amount: parseInt(quoteAmount), message: quoteMsg }),
       });
       const data = await response.json();
       if (data.success) {
-        Alert.alert('Success', 'Job accepted!');
+        Alert.alert('Quote Sent ✅', 'The customer will be notified');
+        setQuoteAmount(''); setQuoteMsg('');
         loadJob();
-      } else {
-        Alert.alert('Error', data.error || 'Could not accept job');
-      }
-    } catch (error) {
-      Alert.alert('Error', 'Failed to accept job');
-    }
+      } else { Alert.alert('Error', data.error || 'Failed to send quote'); }
+    } catch { Alert.alert('Error', 'Connection failed'); }
+    finally { setSendingQuote(false); }
+  };
+
+  const acceptQuote = async (quoteId) => {
+    try {
+      const response = await fetch(`${API_URL}/quotes/${quoteId}/accept`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json();
+      if (data.success) { Alert.alert('✅ Fixer Hired!', 'The fixer has been assigned to your job'); loadJob(); }
+      else { Alert.alert('Error', data.error || 'Failed to accept quote'); }
+    } catch { Alert.alert('Error', 'Connection failed'); }
+  };
+
+  const reportJob = () => {
+    Alert.alert(
+      'Report Job',
+      'Why are you reporting this job?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Scam / Fraud', onPress: () => submitReport('Scam or fraud') },
+        { text: 'Inappropriate content', onPress: () => submitReport('Inappropriate content') },
+        { text: 'Other', onPress: () => submitReport('Other') },
+      ]
+    );
+  };
+
+  const submitReport = async (reason) => {
+    try {
+      const response = await fetch(`${API_URL}/jobs/${jobId}/report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ reason }),
+      });
+      const data = await response.json();
+      if (data.success) Alert.alert('Reported', 'Thank you. We will investigate.');
+      else Alert.alert('Error', 'Failed to submit report');
+    } catch { Alert.alert('Error', 'Connection failed'); }
   };
 
   const updateStatus = async (status) => {
-    try {
-      const response = await fetch(`${API_URL}/jobs/${jobId}/status`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ status }),
-      });
-      const data = await response.json();
-      if (data.success) {
-        Alert.alert('Success', `Job marked as ${status}`);
-        loadJob();
-      } else {
-        Alert.alert('Error', data.error);
-      }
-    } catch (error) {
-      Alert.alert('Error', 'Failed to update status');
-    }
+    console.log('📤 updateStatus called with:', status);
+    console.log('   Job ID:', jobId);
+    
+    Alert.alert(
+      'Confirm Action',
+      `Mark this job as ${status}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Confirm',
+          onPress: async () => {
+            try {
+              const response = await fetch(`${API_URL}/jobs/${jobId}/status`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ status }),
+              });
+              const data = await response.json();
+              if (data.success) {
+                if (status === 'completed') {
+                  Alert.alert('Job Complete! 🎉', 'Would you like to rate your experience?', [
+                    { text: 'Later', style: 'cancel', onPress: () => loadJob() },
+                    { text: 'Rate Now', onPress: () => navigation.navigate('RateJob', { jobId }) }
+                  ]);
+                } else {
+                  Alert.alert('Success', `Job marked as ${status}`);
+                  loadJob();
+                }
+              } else {
+                Alert.alert('Error', data.error || 'Failed to update status');
+              }
+            } catch (error) {
+              console.error('Error:', error);
+              Alert.alert('Error', 'Connection failed');
+            }
+          }
+        }
+      ]
+    );
   };
 
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color="#1A8A5A" /></View>;
   if (!job) return <View style={styles.center}><Text>Job not found</Text></View>;
 
+  const quotes = job.quotes || [];
+  const myQuote = quotes.find(q => q.fixerId === user.id);
+  const canChat = job.fixerId === user.id || job.customerId === user.id;
+
   return (
-    <ScrollView style={styles.container}>
-      <View style={styles.detailCard}>
-        <Text style={styles.detailTitle}>{job.title}</Text>
-        <Text style={styles.detailCategory}>{job.category}</Text>
-        <Text style={styles.detailLocation}>📍 {job.location}</Text>
-        <Text style={styles.detailBudget}>💰 R{job.budget || 'Negotiable'}</Text>
-        <Text style={styles.detailDescription}>{job.description}</Text>
-        <Text style={styles.detailCustomer}>Posted by: {job.customerName}</Text>
-        <Text style={styles.detailStatus}>Status: {job.status}</Text>
+    <SafeAreaView style={styles.screen}>
+      <View style={styles.detailNavBar}>
+        <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.detailBack}>← Back</Text></TouchableOpacity>
+        <Text style={styles.detailNavTitle}>Job Details</Text>
+        <TouchableOpacity onPress={shareJob}><Text style={styles.detailShare}>Share</Text></TouchableOpacity>
       </View>
-      
-      {/* Share Button */}
-      <TouchableOpacity style={styles.shareButton} onPress={shareJob}>
-        <Text style={styles.shareButtonText}>📱 Share this Job</Text>
-      </TouchableOpacity>
-      
-      {/* Fixer Actions */}
-      {user.role === 'fixer' && job.status === 'open' && (
-        <TouchableOpacity style={styles.actionButton} onPress={acceptJob}>
-          <Text style={styles.actionButtonText}>Accept Job</Text>
-        </TouchableOpacity>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+        <View style={styles.detailCard}>
+          {job?.photo_url && <Image source={{ uri: job.photo_url }} style={styles.jobDetailImage} />}
+          <View style={styles.detailBadgeRow}>
+            <View style={styles.detailCatBadge}><Text style={styles.detailCatText}>{job.category}</Text></View>
+            <View style={[styles.detailStatusBadge, job.status === 'open' ? styles.statusOpen : job.status === 'completed' ? styles.statusDone : styles.statusActive]}>
+              <Text style={styles.jobStatusText}>{job.status === 'open' ? 'Available' : job.status}</Text>
+            </View>
+          </View>
+          <Text style={styles.detailTitle}>{job.title}</Text>
+          <View style={styles.detailMetaRow}>
+            <Text style={styles.detailMetaItem}>📍 {job.location}</Text>
+            <Text style={styles.detailPrice}>R{job.budget || 'Negotiable'}</Text>
+          </View>
+          <Text style={styles.detailDesc}>{job.description}</Text>
+          <View style={styles.detailCustomerRow}>
+            <View style={styles.detailAvatarSmall}><Text style={styles.detailAvatarText}>{job.customerName?.charAt(0).toUpperCase() || '?'}</Text></View>
+            <Text style={styles.detailCustomerName}>Posted by {job.customerName}</Text>
+          </View>
+          <TouchableOpacity style={styles.reportBtn} onPress={reportJob}>
+            <Text style={styles.reportBtnText}>⚠️ Report Issue</Text>
+          </TouchableOpacity>
+        </View>
+
+        {user.role === 'fixer' && job.status === 'assigned' && job.fixerId === user.id && (
+          <TouchableOpacity style={styles.actionBtn} onPress={() => updateStatus('in_progress')}>
+            <Text style={styles.actionBtnText}>🚀 Start Work</Text>
+          </TouchableOpacity>
+        )}
+        {user.role === 'fixer' && job.status === 'in_progress' && job.fixerId === user.id && (
+          <TouchableOpacity style={styles.actionBtn} onPress={() => updateStatus('completed')}>
+            <Text style={styles.actionBtnText}>✅ Mark Complete</Text>
+          </TouchableOpacity>
+        )}
+        {canChat && job.fixerId && (
+          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#0ea5e9', marginTop: 8 }]}
+            onPress={() => navigation.navigate('ChatDetail', {
+              job,
+              otherUser: {
+                fullName: user.role === 'customer' ? job.fixerName : job.customerName,
+                id: user.role === 'customer' ? job.fixerId : job.customerId,
+              }
+            })}>
+            <Text style={styles.actionBtnText}>💬 Open Chat</Text>
+          </TouchableOpacity>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}function NotificationsScreen({ navigation }) {
+  const { token } = useContext(AuthContext);
+  const [notifications, setNotifications] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { loadNotifications(); }, []);
+
+  const loadNotifications = async () => {
+    if (!token) { setLoading(false); return; }
+    try {
+      const r = await fetch(`${API_URL}/notifications`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) { setLoading(false); return; }
+      const d = await r.json();
+      setNotifications(d.notifications || []);
+    } catch (e) { console.warn('loadNotifications failed:', e.message); }
+    finally { setLoading(false); }
+  };
+
+  const markRead = async (id) => {
+    try {
+      await fetch(`${API_URL}/notifications/${id}/read`, { method: 'PATCH', headers: { Authorization: `Bearer ${token}` } });
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, isRead: 1 } : n));
+    } catch { /* silent */ }
+  };
+
+  const getNotifEmoji = (title) => {
+    if (title?.includes('Job')) return '📋';
+    if (title?.includes('Message')) return '💬';
+    if (title?.includes('Quote')) return '💰';
+    if (title?.includes('Review')) return '⭐';
+    if (title?.includes('Payment')) return '💳';
+    if (title?.includes('Accept')) return '✅';
+    if (title?.includes('Report') || title?.includes('Suspend')) return '🚨';
+    return '🔔';
+  };
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="light-content" backgroundColor="#1A8A5A" />
+      <View style={styles.createHeader}>
+        <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.createBack}>← Back</Text></TouchableOpacity>
+        <Text style={styles.createTitle}>Notifications</Text>
+        <View style={{ width: 60 }} />
+      </View>
+      {loading ? (
+        <View style={styles.center}><ActivityIndicator size="large" color="#1A8A5A" /></View>
+      ) : notifications.length === 0 ? (
+        <View style={styles.emptyBox}>
+          <Text style={styles.emptyEmoji}>🔔</Text>
+          <Text style={styles.emptyTitle}>No notifications yet</Text>
+          <Text style={styles.emptySubtitle}>You'll be notified about jobs, messages and more</Text>
+        </View>
+      ) : (
+        <ScrollView contentContainerStyle={{ padding: 16 }}>
+          {notifications.map(n => (
+            <TouchableOpacity key={n.id} style={[styles.notifCard, !n.isRead && styles.notifCardUnread]}
+              onPress={() => { markRead(n.id); const data = n.data ? JSON.parse(n.data) : {}; if (data.jobId) navigation.navigate('JobDetails', { jobId: data.jobId }); }}>
+              <View style={styles.notifIconBox}><Text style={styles.notifIcon}>{getNotifEmoji(n.title)}</Text></View>
+              <View style={styles.notifContent}>
+                <Text style={styles.notifTitle}>{n.title}</Text>
+                <Text style={styles.notifBody}>{n.body}</Text>
+                <Text style={styles.notifTime}>{new Date(n.createdAt).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</Text>
+              </View>
+              {!n.isRead && <View style={styles.notifUnreadDot} />}
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       )}
-      
-      {user.role === 'fixer' && job.status === 'assigned' && job.fixerId === user.id && (
-        <TouchableOpacity style={styles.actionButton} onPress={() => updateStatus('in_progress')}>
-          <Text style={styles.actionButtonText}>Start Work</Text>
-        </TouchableOpacity>
-      )}
-      
-      {user.role === 'fixer' && job.status === 'in_progress' && job.fixerId === user.id && (
-        <TouchableOpacity style={styles.actionButton} onPress={() => updateStatus('completed')}>
-          <Text style={styles.actionButtonText}>Mark Complete</Text>
-        </TouchableOpacity>
-      )}
-      
-      {/* Customer Actions */}
-      {user.role === 'customer' && job.customerId === user.id && job.status === 'assigned' && (
-        <TouchableOpacity style={styles.actionButton} onPress={() => updateStatus('in_progress')}>
-          <Text style={styles.actionButtonText}>Start Work</Text>
-        </TouchableOpacity>
-      )}
-      
-      {user.role === 'customer' && job.customerId === user.id && job.status === 'in_progress' && (
-        <TouchableOpacity style={styles.actionButton} onPress={() => updateStatus('completed')}>
-          <Text style={styles.actionButtonText}>Mark Complete</Text>
-        </TouchableOpacity>
-      )}
-      
-      {/* Back Button */}
-      <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-        <Text style={styles.backButtonText}>← Back to Jobs</Text>
-      </TouchableOpacity>
-    </ScrollView>
+    </SafeAreaView>
   );
 }
 
-// ========== MAIN APP ==========
+// ─── FIXER DETAIL SCREEN ──────────────────────────────────────────────────────
+
+function FixerDetailScreen({ route, navigation }) {
+  const { fixer: fixerProp } = route.params;
+  const { token, user } = useContext(AuthContext);
+  const [fixer, setFixer] = useState(fixerProp);
+  const [reviews, setReviews] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [myJobs, setMyJobs] = useState([]);
+
+  useEffect(() => { loadProfile(); loadMyJobs(); }, []);
+
+  const loadProfile = async () => {
+    try {
+      const [profRes, revRes] = await Promise.all([
+        fetch(`${API_URL}/fixers/${fixerProp.id}`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${API_URL}/reviews/${fixerProp.id}`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      const [profData, revData] = await Promise.all([profRes.json(), revRes.json()]);
+      if (profData.success) setFixer(profData.fixer);
+      if (revData.success) setReviews(revData.reviews || []);
+    } catch (e) { console.warn('loadProfile failed:', e.message); }
+    finally { setLoading(false); }
+  };
+
+  const loadMyJobs = async () => {
+    if (user.role !== 'customer' || !token) return;
+    try {
+      const r = await fetch(`${API_URL}/my-jobs`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) return;
+      const d = await r.json();
+      setMyJobs((d.jobs || []).filter(j => j.status === 'open'));
+    } catch { /* silent */ }
+  };
+
+  const hireForJob = () => {
+    if (myJobs.length === 0) {
+      Alert.alert('No Open Jobs', 'You need to post a job first before hiring a fixer.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Post a Job', onPress: () => navigation.navigate('CreateJob') }
+      ]);
+      return;
+    }
+    Alert.alert('Hire ' + fixer.fullName, 'Which job would you like to assign?', [
+      ...myJobs.slice(0, 4).map(j => ({ text: j.title, onPress: () => navigation.navigate('JobDetails', { jobId: j.id }) })),
+      { text: 'Cancel', style: 'cancel' }
+    ]);
+  };
+
+  const reportFixer = () => {
+    Alert.alert('Report Fixer', 'Why are you reporting?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Fraud / Scam', onPress: () => submitReport('Fraud or scam') },
+      { text: 'Inappropriate', onPress: () => submitReport('Inappropriate behaviour') },
+      { text: 'Other', onPress: () => submitReport('Other') },
+    ]);
+  };
+
+  const submitReport = async (reason) => {
+    try {
+      await fetch(`${API_URL}/users/${fixer.id}/report`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ reason })
+      });
+      Alert.alert('Reported', 'Thank you. We will investigate within 24 hours.');
+    } catch { Alert.alert('Error', 'Failed to submit report'); }
+  };
+
+  const renderStars = (rating) => { const full = Math.floor(rating || 0); return '★'.repeat(full) + '☆'.repeat(5 - full); };
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <View style={styles.detailNavBar}>
+        <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.detailBack}>← Back</Text></TouchableOpacity>
+        <Text style={styles.detailNavTitle}>Fixer Profile</Text>
+        <TouchableOpacity onPress={reportFixer}><Text style={[styles.detailShare, { color: '#FCA5A5' }]}>Report</Text></TouchableOpacity>
+      </View>
+      <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+        <View style={styles.fixerDetailHero}>
+          <View style={[styles.fixerDetailAvatar, { backgroundColor: '#1A8A5A' }]}>
+            <Text style={styles.fixerDetailAvatarText}>{fixer.fullName?.slice(0, 2).toUpperCase()}</Text>
+          </View>
+          <Text style={styles.fixerDetailName}>{fixer.fullName}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
+            <Text style={styles.fixerDetailStars}>{renderStars(fixer.rating)}</Text>
+            <Text style={styles.fixerDetailRatingText}>{(fixer.rating || 0).toFixed(1)} ({fixer.totalReviews || 0} reviews)</Text>
+          </View>
+          {fixer.isAvailable !== 0 && <View style={styles.availableBadge}><Text style={styles.availableBadgeText}>🟢 Available Now</Text></View>}
+          {fixer.isPhoneVerified ? <View style={[styles.availableBadge, { backgroundColor: '#EFF6FF', marginTop: 4 }]}><Text style={[styles.availableBadgeText, { color: '#3B82F6' }]}>✅ Verified Phone</Text></View> : null}
+        </View>
+
+        <View style={styles.fixerStatRow}>
+          <View style={styles.fixerStatItem}><Text style={styles.fixerStatNum}>R{fixer.hourlyRate || '—'}</Text><Text style={styles.fixerStatLbl}>{fixer.pricingType === 'fixed' ? 'Fixed/hr' : 'From/hr'}</Text></View>
+          <View style={styles.fixerStatDivider} />
+          <View style={styles.fixerStatItem}><Text style={styles.fixerStatNum}>{fixer.completedJobs || 0}</Text><Text style={styles.fixerStatLbl}>Jobs Done</Text></View>
+          <View style={styles.fixerStatDivider} />
+          <View style={styles.fixerStatItem}><Text style={styles.fixerStatNum}>{(fixer.rating || 0).toFixed(1)}★</Text><Text style={styles.fixerStatLbl}>Rating</Text></View>
+        </View>
+
+        {fixer.bio ? <View style={styles.fixerDetailSection}><Text style={styles.fixerDetailSectionTitle}>About</Text><Text style={styles.fixerDetailBio}>{fixer.bio}</Text></View> : null}
+
+        {fixer.skills ? (
+          <View style={styles.fixerDetailSection}>
+            <Text style={styles.fixerDetailSectionTitle}>Skills & Services</Text>
+            <View style={styles.skillsWrap}>
+              {fixer.skills.split(',').map((s, i) => <View key={i} style={styles.skillChip}><Text style={styles.skillChipText}>{s.trim()}</Text></View>)}
+            </View>
+          </View>
+        ) : null}
+
+        {(fixer.experience || fixer.education) ? (
+          <View style={styles.fixerDetailSection}>
+            <Text style={styles.fixerDetailSectionTitle}>Background</Text>
+            {fixer.experience ? <View style={styles.infoRow}><Text style={styles.infoLabel}>📚 Experience</Text><Text style={styles.infoValue}>{fixer.experience}</Text></View> : null}
+            {fixer.education ? <View style={styles.infoRow}><Text style={styles.infoLabel}>🎓 Education</Text><Text style={styles.infoValue}>{fixer.education}</Text></View> : null}
+          </View>
+        ) : null}
+
+        <View style={styles.fixerDetailSection}>
+          <Text style={styles.fixerDetailSectionTitle}>Reviews ({reviews.length})</Text>
+          {loading ? <ActivityIndicator color="#1A8A5A" /> :
+           reviews.length === 0 ? <Text style={styles.fixerDetailBio}>No reviews yet — be the first!</Text> : (
+            reviews.slice(0, 5).map(rev => (
+              <View key={rev.id} style={styles.reviewCard}>
+                <View style={styles.reviewTop}>
+                  <View style={styles.reviewAvatar}><Text style={styles.reviewAvatarText}>{rev.reviewerName?.charAt(0).toUpperCase()}</Text></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.reviewName}>{rev.reviewerName}</Text>
+                    <Text style={styles.reviewStars}>{'★'.repeat(rev.rating)}{'☆'.repeat(5 - rev.rating)}</Text>
+                  </View>
+                  <Text style={styles.reviewDate}>{new Date(rev.createdAt).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short' })}</Text>
+                </View>
+                {rev.comment ? <Text style={styles.reviewComment}>{rev.comment}</Text> : null}
+              </View>
+            ))
+          )}
+        </View>
+
+        {user.role === 'customer' && (
+          <>
+            <TouchableOpacity style={[styles.actionBtn, { marginHorizontal: 16 }]} onPress={hireForJob}>
+              <Text style={styles.actionBtnText}>🔧 Hire {fixer.fullName?.split(' ')[0]}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#0ea5e9', marginHorizontal: 16, marginTop: 10 }]}
+              onPress={() => navigation.navigate('ChatDetail', { fixer, otherUser: { fullName: fixer.fullName, id: fixer.id } })}>
+              <Text style={styles.actionBtnText}>💬 Send Message</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+// ─── JOB HISTORY SCREEN ───────────────────────────────────────────────────────
+
+function JobHistoryScreen({ navigation }) {
+  const { user, token } = useContext(AuthContext);
+  const [jobs, setJobs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('all');
+
+  useEffect(() => { loadJobs(); }, []);
+
+  const loadJobs = async () => {
+    if (!token) { setLoading(false); return; }
+    try {
+      const r = await fetch(`${API_URL}/my-jobs`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) { setLoading(false); return; }
+      const d = await r.json();
+      setJobs(d.jobs || []);
+    } catch (e) { console.warn('loadJobs history failed:', e.message); }
+    finally { setLoading(false); }
+  };
+
+  const filters = ['all', 'open', 'in_progress', 'completed', 'cancelled'];
+  const filtered = filter === 'all' ? jobs : jobs.filter(j => j.status === filter);
+  const statusColor = { open: '#10B981', assigned: '#F59E0B', in_progress: '#3B82F6', completed: '#6B7280', cancelled: '#EF4444' };
+  const statusLabel = { open: 'Available', assigned: 'Assigned', in_progress: 'In Progress', completed: 'Completed', cancelled: 'Cancelled' };
+  const getCategoryEmoji = (cat) => { const map = { Plumbing: '💧', Electrical: '⚡', Cleaning: '🧹', Painting: '🎨', Handyman: '🔨', Gardening: '🌱' }; return map[cat] || '🔧'; };
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="light-content" backgroundColor="#1A8A5A" />
+      <View style={styles.createHeader}>
+        <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.createBack}>← Back</Text></TouchableOpacity>
+        <Text style={styles.createTitle}>Job History</Text>
+        <View style={{ width: 60 }} />
+      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ maxHeight: 52 }} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8 }}>
+        {filters.map(f => (
+          <TouchableOpacity key={f} style={[styles.catChip, filter === f && styles.catChipActive, { marginRight: 8 }]} onPress={() => setFilter(f)}>
+            <Text style={[styles.catChipText, filter === f && styles.catChipTextActive]}>
+              {f === 'all' ? 'All' : f === 'in_progress' ? 'Active' : f.charAt(0).toUpperCase() + f.slice(1)}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+      {loading ? (
+        <View style={styles.center}><ActivityIndicator size="large" color="#1A8A5A" /></View>
+      ) : filtered.length === 0 ? (
+        <View style={styles.emptyBox}><Text style={styles.emptyEmoji}>📋</Text><Text style={styles.emptyTitle}>No {filter === 'all' ? '' : filter} jobs</Text></View>
+      ) : (
+        <ScrollView contentContainerStyle={{ padding: 16 }}>
+          {filtered.map(job => (
+            <TouchableOpacity key={job.id} style={styles.historyCard} onPress={() => navigation.navigate('JobDetails', { jobId: job.id })}>
+              <View style={styles.historyCardTop}>
+                <View style={styles.historyCatBadge}><Text>{getCategoryEmoji(job.category)}</Text><Text style={styles.historyCatText}>{job.category}</Text></View>
+                <View style={[styles.jobStatusBadge, { backgroundColor: statusColor[job.status] || '#6B7280' }]}>
+                  <Text style={styles.jobStatusText}>{statusLabel[job.status] || job.status}</Text>
+                </View>
+              </View>
+              <Text style={styles.historyTitle}>{job.title}</Text>
+              <View style={styles.historyMeta}>
+                <Text style={styles.historyMetaItem}>📍 {job.location}</Text>
+                <Text style={styles.historyMetaItem}>💰 R{job.budget || 'Neg'}</Text>
+              </View>
+              <View style={styles.historyFooter}>
+                <Text style={styles.historyDate}>{new Date(job.createdAt).toLocaleDateString('en-ZA', { day: 'numeric', month: 'long', year: 'numeric' })}</Text>
+                {job.paymentStatus === 'paid' && <View style={[styles.payStatusBadge, styles.payPaid]}><Text style={styles.payStatusText}>✅ Paid</Text></View>}
+                {job.status === 'completed' && !job.isReviewed && user.role === 'customer' && (
+                  <TouchableOpacity style={styles.rateNowBtn} onPress={() => navigation.navigate('RateJob', { jobId: job.id })}>
+                    <Text style={styles.rateNowBtnText}>⭐ Rate</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
+    </SafeAreaView>
+  );
+}
+
+// ─── ADMIN PANEL SCREEN ────────────────────────────────────────────────────────
+
+function AdminPanelScreen({ navigation }) {
+  const [users, setUsers] = useState([]);
+  const [jobs, setJobs] = useState([]);
+  const [reports, setReports] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [activeTab, setActiveTab] = useState('stats');
+  const [loading, setLoading] = useState(true);
+  const { token, user } = useContext(AuthContext);
+
+  useEffect(() => {
+    if (user?.role !== 'admin') { Alert.alert('Access Denied', 'Admin access required'); navigation.goBack(); return; }
+    loadData();
+  }, [activeTab]);
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const endpoints = { stats: '/admin/stats', users: '/admin/users', jobs: '/admin/jobs', reports: '/admin/reports' };
+      const r = await fetch(`${API_URL}${endpoints[activeTab]}`, { headers: { Authorization: `Bearer ${token}` } });
+      const d = await r.json();
+      if (activeTab === 'stats') setStats(d.stats);
+      else if (activeTab === 'users') setUsers(d.users || []);
+      else if (activeTab === 'jobs') setJobs(d.jobs || []);
+      else if (activeTab === 'reports') setReports(d.reports || []);
+    } catch { Alert.alert('Error', 'Failed to load data'); }
+    finally { setLoading(false); }
+  };
+
+  const banUser = async (userId) => {
+    Alert.alert('Confirm Ban', 'This will prevent the user from logging in.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Ban User', style: 'destructive', onPress: async () => {
+        try {
+          const r = await fetch(`${API_URL}/admin/users/${userId}/ban`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+          const d = await r.json();
+          if (d.success) { Alert.alert('Banned', 'User has been banned'); loadData(); } else Alert.alert('Error', d.error);
+        } catch { Alert.alert('Error', 'Failed to ban user'); }
+      }}
+    ]);
+  };
+
+  const unbanUser = async (userId) => {
+    try {
+      const r = await fetch(`${API_URL}/admin/users/${userId}/unban`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+      const d = await r.json();
+      if (d.success) { Alert.alert('Unbanned', 'User access restored'); loadData(); }
+    } catch { Alert.alert('Error', 'Failed to unban'); }
+  };
+
+  const approveFixer = async (userId) => {
+    try {
+      const r = await fetch(`${API_URL}/admin/fixers/${userId}/approve`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+      const d = await r.json();
+      if (d.success) { Alert.alert('Approved ✅', 'Fixer approved'); loadData(); }
+    } catch { Alert.alert('Error', 'Failed to approve'); }
+  };
+
+  const resolveReport = async (reportId) => {
+    try {
+      const r = await fetch(`${API_URL}/admin/reports/${reportId}/resolve`, { method: 'PATCH', headers: { Authorization: `Bearer ${token}` } });
+      const d = await r.json();
+      if (d.success) { loadData(); }
+    } catch { Alert.alert('Error', 'Failed to resolve'); }
+  };
+
+  const deleteJob = async (jobId) => {
+    Alert.alert('Delete Job', 'This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => {
+        try { await fetch(`${API_URL}/admin/jobs/${jobId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }); loadData(); }
+        catch { Alert.alert('Error', 'Failed to delete job'); }
+      }}
+    ]);
+  };
+
+  const tabs = ['stats', 'users', 'jobs', 'reports'];
+
+  const renderUser = ({ item }) => (
+    <View style={styles.adminUserCard}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.adminUserName}>{item.fullName} {item.isBanned ? '🚫' : ''}</Text>
+        <Text style={styles.adminUserEmail}>{item.email}</Text>
+        <Text style={styles.adminUserRole}>{item.role} · {item.isPhoneVerified ? '✅ Verified' : '❌ Unverified'}</Text>
+      </View>
+      <View style={{ gap: 6 }}>
+        {item.role === 'fixer' && !item.isApproved && <TouchableOpacity style={styles.adminViewBtn} onPress={() => approveFixer(item.id)}><Text style={styles.adminViewBtnText}>Approve</Text></TouchableOpacity>}
+        {item.role !== 'admin' && (
+          <TouchableOpacity style={item.isBanned ? styles.adminViewBtn : styles.adminBanBtn} onPress={() => item.isBanned ? unbanUser(item.id) : banUser(item.id)}>
+            <Text style={item.isBanned ? styles.adminViewBtnText : styles.adminBanBtnText}>{item.isBanned ? 'Unban' : 'Ban'}</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+
+  const renderJob = ({ item }) => (
+    <View style={styles.adminUserCard}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.adminUserName}>{item.title}</Text>
+        <Text style={styles.adminUserEmail}>Status: {item.status} · Payment: {item.paymentStatus || 'pending'}</Text>
+        <Text style={styles.adminUserRole}>By: {item.customerName}</Text>
+      </View>
+      <View style={{ gap: 6 }}>
+        <TouchableOpacity style={styles.adminViewBtn} onPress={() => navigation.navigate('JobDetails', { jobId: item.id })}><Text style={styles.adminViewBtnText}>View</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.adminBanBtn} onPress={() => deleteJob(item.id)}><Text style={styles.adminBanBtnText}>Delete</Text></TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderReport = ({ item }) => (
+    <View style={styles.adminUserCard}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.adminUserName}>Report #{item.id}</Text>
+        <Text style={styles.adminUserEmail}>Reason: {item.reason}</Text>
+        <Text style={styles.adminUserRole}>By: {item.reporterName} · Status: {item.status}</Text>
+      </View>
+      {item.status === 'open' && <TouchableOpacity style={styles.adminViewBtn} onPress={() => resolveReport(item.id)}><Text style={styles.adminViewBtnText}>Resolve</Text></TouchableOpacity>}
+    </View>
+  );
+
+  if (loading && activeTab === 'stats') return <View style={styles.center}><ActivityIndicator size="large" color="#1A8A5A" /></View>;
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="light-content" backgroundColor="#1A8A5A" />
+      <View style={styles.adminHeader}>
+        <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.createBack}>← Back</Text></TouchableOpacity>
+        <Text style={styles.createTitle}>Admin Panel</Text>
+        <View style={{ width: 60 }} />
+      </View>
+      <View style={styles.adminTabs}>
+        {tabs.map(t => (
+          <TouchableOpacity key={t} style={[styles.adminTab, activeTab === t && styles.adminTabActive]} onPress={() => setActiveTab(t)}>
+            <Text style={[styles.adminTabText, activeTab === t && styles.adminTabTextActive]}>{t === 'stats' ? '📊' : t === 'users' ? '👥' : t === 'jobs' ? '📋' : '🚨'}</Text>
+            <Text style={[styles.adminTabText, activeTab === t && styles.adminTabTextActive]}>{t.charAt(0).toUpperCase() + t.slice(1)}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {activeTab === 'stats' && stats && (
+        <ScrollView contentContainerStyle={{ padding: 16 }}>
+          <View style={styles.statsGrid}>
+            {[
+              { label: 'Total Users', value: stats.totalUsers, emoji: '👥' },
+              { label: 'Fixers', value: stats.totalFixers, emoji: '🔧' },
+              { label: 'Customers', value: stats.totalCustomers, emoji: '👤' },
+              { label: 'Total Jobs', value: stats.totalJobs, emoji: '📋' },
+              { label: 'Open Jobs', value: stats.openJobs, emoji: '📂' },
+              { label: 'Completed', value: stats.completedJobs, emoji: '✅' },
+              { label: 'Reviews', value: stats.totalReviews, emoji: '⭐' },
+              { label: 'Open Reports', value: stats.openReports, emoji: '🚨' },
+            ].map(s => (
+              <View key={s.label} style={styles.statCard}>
+                <Text style={{ fontSize: 24 }}>{s.emoji}</Text>
+                <Text style={styles.statNum}>{s.value}</Text>
+                <Text style={styles.statLbl}>{s.label}</Text>
+              </View>
+            ))}
+          </View>
+          <View style={styles.statCard}>
+            <Text style={styles.statLbl}>Avg Rating</Text>
+            <Text style={[styles.statNum, { color: '#F59E0B' }]}>{'★'.repeat(Math.round(stats.averageRating || 0))} {(stats.averageRating || 0).toFixed(1)}</Text>
+          </View>
+        </ScrollView>
+      )}
+
+      {activeTab !== 'stats' && (
+        loading ? <View style={styles.center}><ActivityIndicator size="large" color="#1A8A5A" /></View> : (
+          <FlatList
+            data={activeTab === 'users' ? users : activeTab === 'jobs' ? jobs : reports}
+            keyExtractor={(item) => item.id.toString()}
+            renderItem={activeTab === 'users' ? renderUser : activeTab === 'jobs' ? renderJob : renderReport}
+            contentContainerStyle={styles.adminList}
+            ListEmptyComponent={<View style={styles.emptyBox}><Text style={styles.emptyEmoji}>📭</Text><Text style={styles.emptyTitle}>No {activeTab} found</Text></View>}
+          />
+        )
+      )}
+    </SafeAreaView>
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+
 function MainApp() {
   const { user } = useContext(AuthContext);
   return (
-    <Tab.Navigator 
-      screenOptions={{ 
+    <Tab.Navigator
+      screenOptions={({ route }) => ({
         tabBarActiveTintColor: '#1A8A5A',
-        tabBarInactiveTintColor: '#6B7280',
-        headerStyle: { backgroundColor: '#1A8A5A' }, 
-        headerTintColor: '#fff',
-        headerTitleStyle: { fontWeight: 'bold' }
-      }}
+        tabBarInactiveTintColor: '#9CA3AF',
+        headerShown: false,
+        tabBarStyle: styles.tabBar,
+        tabBarLabelStyle: styles.tabLabel,
+        tabBarIcon: ({ focused }) => {
+          const icons = { Home: '🏠', Fixers: '🔧', Map: '🗺️', Chat: '💬', Profile: '👤' };
+          return <Text style={{ fontSize: focused ? 22 : 20 }}>{icons[route.name]}</Text>;
+        },
+      })}
     >
-      <Tab.Screen name="Jobs" component={HomeScreen} />
-      {user.role === 'customer' && <Tab.Screen name="Post Job" component={CreateJobScreen} />}
+      <Tab.Screen name="Home" component={HomeScreen} />
+      <Tab.Screen name="Fixers" component={FixersScreen} />
+      <Tab.Screen name="Map" component={MapScreen} />
+      <Tab.Screen name="Chat" component={ChatListScreen} />
       <Tab.Screen name="Profile" component={ProfileScreen} />
     </Tab.Navigator>
   );
 }
 
-// ========== PUSH NOTIFICATION HELPER ==========
+// ─── PUSH NOTIFICATIONS ──────────────────────────────────────────────────────
+
 async function registerForPushNotificationsAsync() {
-  let token;
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('default', {
       name: 'default',
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
-      lightColor: '#FF231F7C',
+      lightColor: '#1A8A5A',
     });
   }
-
   const { status: existingStatus } = await Notifications.getPermissionsAsync();
   let finalStatus = existingStatus;
   if (existingStatus !== 'granted') {
     const { status } = await Notifications.requestPermissionsAsync();
     finalStatus = status;
   }
-  if (finalStatus !== 'granted') {
-    alert('Failed to get push token for push notification!');
-    return;
-  }
-  token = (await Notifications.getExpoPushTokenAsync()).data;
-  return token;
+  if (finalStatus !== 'granted') return;
+  return (await Notifications.getExpoPushTokenAsync()).data;
 }
 
-// ========== APP ROOT ==========
+// ─── ROOT APP ─────────────────────────────────────────────────────────────────
+
 export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState(null);
@@ -583,24 +1987,15 @@ export default function App() {
     try {
       const storedToken = await AsyncStorage.getItem('token');
       const storedUser = await AsyncStorage.getItem('user');
-      if (storedToken && storedUser) {
-        setToken(storedToken);
-        setUser(JSON.parse(storedUser));
-      }
-    } catch (error) { 
-      console.error(error);
-    } finally { 
-      setIsLoading(false); 
-    }
+      if (storedToken && storedUser) { setToken(storedToken); setUser(JSON.parse(storedUser)); }
+    } catch (e) { console.error(e); }
+    finally { setIsLoading(false); }
   };
 
   const signIn = async (newToken, newUser) => {
     await AsyncStorage.setItem('token', newToken);
     await AsyncStorage.setItem('user', JSON.stringify(newUser));
-    setToken(newToken);
-    setUser(newUser);
-    
-    // Register push token
+    setToken(newToken); setUser(newUser);
     try {
       const pushToken = await registerForPushNotificationsAsync();
       if (pushToken) {
@@ -610,16 +2005,13 @@ export default function App() {
           body: JSON.stringify({ pushToken }),
         });
       }
-    } catch (error) {
-      console.error('Push token registration error:', error);
-    }
+    } catch (e) { console.warn('Push token registration failed:', e.message); }
   };
 
   const signOut = async () => {
     await AsyncStorage.removeItem('token');
     await AsyncStorage.removeItem('user');
-    setToken(null);
-    setUser(null);
+    setToken(null); setUser(null);
   };
 
   if (isLoading) return <View style={styles.center}><ActivityIndicator size="large" color="#1A8A5A" /></View>;
@@ -633,6 +2025,13 @@ export default function App() {
               <Stack.Screen name="Main" component={MainApp} />
               <Stack.Screen name="JobDetails" component={JobDetailsScreen} />
               <Stack.Screen name="CreateJob" component={CreateJobScreen} />
+              <Stack.Screen name="ChatDetail" component={ChatDetailScreen} />
+              <Stack.Screen name="MapTab" component={MapScreen} />
+              <Stack.Screen name="RateJob" component={RateJobScreen} />
+              <Stack.Screen name="AdminPanel" component={AdminPanelScreen} />
+              <Stack.Screen name="Notifications" component={NotificationsScreen} />
+              <Stack.Screen name="FixerDetail" component={FixerDetailScreen} />
+              <Stack.Screen name="JobHistory" component={JobHistoryScreen} />
             </>
           ) : (
             <>
@@ -646,135 +2045,382 @@ export default function App() {
   );
 }
 
-// ========== STYLES ==========
+// ─── STYLES ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F3F4F6' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  authContainer: { flex: 1, backgroundColor: '#fff' },
-  authContent: { padding: 20, justifyContent: 'center', flexGrow: 1 },
-  authTitle: { fontSize: 36, fontWeight: 'bold', color: '#1A8A5A', textAlign: 'center', marginBottom: 8 },
-  authSubtitle: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginBottom: 40 },
-  authInput: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 16 },
-  authButton: { backgroundColor: '#1A8A5A', padding: 16, borderRadius: 10, alignItems: 'center', marginTop: 12 },
-  authButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  authLink: { color: '#1A8A5A', textAlign: 'center', marginTop: 20 },
-  roleSelector: { flexDirection: 'row', gap: 12, marginBottom: 20 },
-  roleOption: { flex: 1, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#E5E7EB', alignItems: 'center' },
-  roleActive: { backgroundColor: '#1A8A5A', borderColor: '#1A8A5A' },
-  roleText: { color: '#6B7280' },
-  roleTextActive: { color: '#fff' },
-  categoryFilter: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
-  },
-  categoryChipFilter: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#f3f4f6',
-    marginRight: 8,
-  },
-  categoryChipActive: {
-    backgroundColor: '#1A8A5A',
-  },
-  categoryChipText: {
-    color: '#6b7280',
-    fontSize: 14,
-  },
-  categoryChipTextActive: {
-    color: '#fff',
-  },
-  jobList: { padding: 12 },
-  jobCard: { backgroundColor: '#fff', borderRadius: 12, padding: 12, marginBottom: 12, elevation: 2 },
-  jobHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  jobTitle: { fontSize: 16, fontWeight: 'bold', flex: 1, marginRight: 8 },
-  jobStatus: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
-  jobStatusText: { fontSize: 10, color: '#fff', fontWeight: 'bold' },
-  jobCategory: { fontSize: 13, color: '#1A8A5A', marginBottom: 4 },
-  jobLocation: { fontSize: 12, color: '#6B7280', marginBottom: 8 },
-  jobFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
-  jobBudget: { fontSize: 14, fontWeight: 'bold', color: '#1A8A5A' },
-  jobCustomer: { fontSize: 11, color: '#9CA3AF' },
-  fab: { position: 'absolute', bottom: 20, right: 20, backgroundColor: '#1A8A5A', width: 56, height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center', elevation: 4 },
-  fabText: { fontSize: 28, color: '#fff', fontWeight: 'bold' },
-  emptyText: { textAlign: 'center', marginTop: 40, color: '#9CA3AF' },
-  createHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
-  },
-  createHeaderTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1A8A5A',
-  },
-  backButtonHeader: {
-    padding: 8,
-  },
-  backButtonHeaderText: {
-    fontSize: 16,
-    color: '#1A8A5A',
-    fontWeight: 'bold',
-  },
-  logoutButtonHeader: {
-    padding: 8,
-  },
-  logoutButtonHeaderText: {
-    fontSize: 14,
-    color: '#ef4444',
-    fontWeight: 'bold',
-  },
-  createForm: { padding: 16 },
-  sectionTitle: { fontSize: 24, fontWeight: 'bold', color: '#1A8A5A', marginBottom: 20, textAlign: 'center' },
-  input: { backgroundColor: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E5E7EB', fontSize: 16 },
-  textArea: { height: 100, textAlignVertical: 'top' },
-  sectionLabel: { fontSize: 14, fontWeight: 'bold', color: '#374151', marginBottom: 8 },
-  categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 12 },
-  categoryChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: '#fff', margin: 4, borderWidth: 1, borderColor: '#E5E7EB' },
-  categoryActive: { backgroundColor: '#1A8A5A', borderColor: '#1A8A5A' },
-  categoryText: { color: '#6B7280' },
-  categoryTextActive: { color: '#fff' },
-  submitButton: { backgroundColor: '#1A8A5A', padding: 16, borderRadius: 10, alignItems: 'center', marginTop: 12 },
-  submitButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  profileHeader: { backgroundColor: '#fff', padding: 20, alignItems: 'center', margin: 12, borderRadius: 12 },
-  profileName: { fontSize: 24, fontWeight: 'bold', marginBottom: 4 },
-  profileRole: { fontSize: 14, color: '#1A8A5A', marginBottom: 4 },
-  profileEmail: { fontSize: 14, color: '#6B7280', marginBottom: 20 },
-  logoutButton: { backgroundColor: '#EF4444', padding: 15, borderRadius: 10, alignItems: 'center', minWidth: 200 },
-  logoutButtonText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-  detailCard: { backgroundColor: '#fff', margin: 12, padding: 16, borderRadius: 12 },
-  detailTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 8 },
-  detailCategory: { fontSize: 14, color: '#1A8A5A', marginBottom: 8 },
-  detailLocation: { fontSize: 14, color: '#6B7280', marginBottom: 8 },
-  detailBudget: { fontSize: 18, fontWeight: 'bold', color: '#1A8A5A', marginBottom: 12 },
-  detailDescription: { fontSize: 14, color: '#374151', lineHeight: 20, marginBottom: 12 },
-  detailCustomer: { fontSize: 12, color: '#6B7280', marginBottom: 4 },
-  detailStatus: { fontSize: 12, color: '#1A8A5A', fontWeight: 'bold', marginTop: 8 },
-  actionButton: { backgroundColor: '#1A8A5A', margin: 12, padding: 16, borderRadius: 10, alignItems: 'center' },
-  actionButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  shareButton: {
-    backgroundColor: '#1A8A5A',
-    marginHorizontal: 12,
-    marginBottom: 12,
-    padding: 16,
-    borderRadius: 10,
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'center',
-  },
-  shareButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginLeft: 8,
-  },
-  backButton: { backgroundColor: '#6B7280', margin: 12, padding: 16, borderRadius: 10, alignItems: 'center' },
-  backButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  screen: { flex: 1, backgroundColor: '#F8F9FC' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F8F9FC' },
+
+  // Auth
+  authContainer: { flex: 1, backgroundColor: '#1A8A5A' },
+  authTop: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingBottom: 20 },
+  authLogo: { fontSize: 40, fontWeight: 'bold', color: '#fff' },
+  authTagline: { fontSize: 14, color: 'rgba(255,255,255,0.8)', marginTop: 8 },
+  authCard: { backgroundColor: '#fff', borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 28, paddingBottom: 40 },
+  authCardTitle: { fontSize: 24, fontWeight: 'bold', color: '#111827', marginBottom: 24 },
+  authInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 14, padding: 16, marginBottom: 12, fontSize: 15, color: '#111827' },
+  authBtn: { backgroundColor: '#1A8A5A', padding: 16, borderRadius: 14, alignItems: 'center', marginTop: 8, marginBottom: 16 },
+  authBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  authLink: { color: '#6B7280', textAlign: 'center', fontSize: 14 },
+  authLinkBold: { color: '#1A8A5A', fontWeight: '700' },
+  roleRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
+  roleBtn: { flex: 1, padding: 14, borderRadius: 12, borderWidth: 1.5, borderColor: '#E5E7EB', alignItems: 'center' },
+  roleBtnActive: { backgroundColor: '#1A8A5A', borderColor: '#1A8A5A' },
+  roleBtnText: { color: '#6B7280', fontWeight: '600', fontSize: 15 },
+  roleBtnTextActive: { color: '#fff' },
+  otpSubtext: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginBottom: 20 },
+
+  // Home Header
+  homeHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 16, backgroundColor: '#1A8A5A' },
+  homeGreeting: { fontSize: 13, color: 'rgba(255,255,255,0.8)' },
+  homeUserName: { fontSize: 22, fontWeight: 'bold', color: '#fff' },
+  headerRight: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  headerIconBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', position: 'relative' },
+  headerIcon: { fontSize: 18 },
+  notifBadge: { position: 'absolute', top: 4, right: 4, backgroundColor: '#EF4444', borderRadius: 8, width: 16, height: 16, justifyContent: 'center', alignItems: 'center' },
+  notifBadgeText: { fontSize: 9, color: '#fff', fontWeight: 'bold' },
+
+  // Stats Grid
+  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8, gap: 12 },
+  statCard: { flex: 1, minWidth: '44%', backgroundColor: '#fff', borderRadius: 18, padding: 16, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 2 },
+  statNum: { fontSize: 28, fontWeight: 'bold', color: '#111827' },
+  statNumGreen: { color: '#1A8A5A', fontSize: 22 },
+  statLbl: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+
+  // Category chips
+  catScroll: { marginVertical: 12 },
+  catChip: { paddingHorizontal: 16, paddingVertical: 9, borderRadius: 30, backgroundColor: '#fff', marginRight: 10, borderWidth: 1.5, borderColor: '#E5E7EB' },
+  catChipActive: { backgroundColor: '#1A8A5A', borderColor: '#1A8A5A' },
+  catChipText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+  catChipTextActive: { color: '#fff' },
+
+  // Job Cards
+  jobCard: { backgroundColor: '#fff', borderRadius: 20, padding: 16, marginBottom: 14, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
+  jobCardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  jobCatBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0FDF4', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, gap: 4 },
+  jobCatEmoji: { fontSize: 12 },
+  jobCatText: { fontSize: 12, color: '#1A8A5A', fontWeight: '600' },
+  jobStatusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
+  statusOpen: { backgroundColor: '#10B981' },
+  statusDone: { backgroundColor: '#6B7280' },
+  statusActive: { backgroundColor: '#F59E0B' },
+  jobStatusText: { fontSize: 11, color: '#fff', fontWeight: '600' },
+  jobCardTitle: { fontSize: 17, fontWeight: 'bold', color: '#111827', marginBottom: 8 },
+  jobCardMeta: { flexDirection: 'row', gap: 12, flexWrap: 'wrap', marginBottom: 12 },
+  jobMetaItem: { fontSize: 12, color: '#6B7280' },
+  hireBtn: { backgroundColor: '#F59E0B', borderRadius: 14, padding: 13, alignItems: 'center' },
+  hireBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+
+  // Empty state
+  emptyBox: { alignItems: 'center', paddingVertical: 48 },
+  emptyEmoji: { fontSize: 48, marginBottom: 12 },
+  emptyTitle: { fontSize: 18, fontWeight: 'bold', color: '#374151', marginBottom: 6 },
+  emptySubtitle: { fontSize: 14, color: '#9CA3AF', marginBottom: 20 },
+  emptyBtn: { backgroundColor: '#1A8A5A', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 25 },
+  emptyBtnText: { color: '#fff', fontWeight: '700' },
+
+  // FAB
+  fab: { position: 'absolute', bottom: 20, right: 20, backgroundColor: '#1A8A5A', width: 56, height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center', shadowColor: '#1A8A5A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 8 },
+  fabText: { fontSize: 30, color: '#fff', fontWeight: 'bold', lineHeight: 34 },
+
+  // Fixers Screen
+  fixersHeader: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8, backgroundColor: '#F8F9FC' },
+  fixersTitle: { fontSize: 26, fontWeight: 'bold', color: '#111827' },
+  locationText: { fontSize: 12, color: '#1A8A5A', marginTop: 4 },
+  searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, marginHorizontal: 16, marginBottom: 12, paddingHorizontal: 14, borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 1 },
+  searchDot: { fontSize: 16, marginRight: 8 },
+  searchInput: { flex: 1, fontSize: 15, color: '#111827', paddingVertical: 13 },
+  filterRow: { flexDirection: 'row', paddingHorizontal: 16, gap: 10, marginBottom: 12 },
+  filterChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 30, backgroundColor: '#fff', borderWidth: 1.5, borderColor: '#E5E7EB' },
+  filterChipActive: { backgroundColor: '#1A8A5A', borderColor: '#1A8A5A' },
+  filterChipText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+  filterChipTextActive: { color: '#fff' },
+  fixerCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, padding: 14, marginBottom: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 2 },
+  fixerAvatar: { width: 52, height: 52, borderRadius: 26, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
+  fixerAvatarText: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
+  fixerInfo: { flex: 1 },
+  fixerName: { fontSize: 16, fontWeight: 'bold', color: '#111827', marginBottom: 2 },
+  fixerStars: { fontSize: 13, color: '#F59E0B', marginBottom: 4 },
+  fixerMeta: { flexDirection: 'row', gap: 12, flexWrap: 'wrap' },
+  fixerMetaText: { fontSize: 12, color: '#6B7280' },
+  onlineDot: { width: 12, height: 12, borderRadius: 6 },
+  onlineGreen: { backgroundColor: '#10B981' },
+  onlineGray: { backgroundColor: '#D1D5DB' },
+  postJobBtnFixed: { position: 'absolute', bottom: 20, left: 20, right: 20, backgroundColor: '#1A8A5A', borderRadius: 16, padding: 16, alignItems: 'center', shadowColor: '#1A8A5A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 8, elevation: 8 },
+  postJobBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+
+  // Backend down banner (new)
+  backendDownBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF3C7', marginHorizontal: 16, marginBottom: 8, borderRadius: 12, padding: 12, gap: 8 },
+  backendDownText: { flex: 1, fontSize: 13, color: '#92400E' },
+  retryBtn: { backgroundColor: '#F59E0B', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 },
+  retryBtnText: { fontSize: 12, color: '#fff', fontWeight: '700' },
+
+  // Map Screen
+  mapHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, backgroundColor: '#1A8A5A' },
+  mapBack: { fontSize: 22, color: '#fff', fontWeight: 'bold' },
+  mapTitle: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
+  mapPlaceholder: { flex: 1, backgroundColor: '#C8E6C9', position: 'relative' },
+  mapLegend: { position: 'absolute', top: 12, left: 12, backgroundColor: '#fff', borderRadius: 12, padding: 10, zIndex: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 },
+  legendRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  legendDot: { width: 10, height: 10, borderRadius: 5, marginRight: 6 },
+  legendText: { fontSize: 12, color: '#374151' },
+  mapAreaLabel: { fontSize: 13, color: '#374151', fontWeight: '500', position: 'absolute' },
+  mapPin: { position: 'absolute', width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: '#fff' },
+  nearbyPanel: { backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 100 },
+  nearbyTitle: { fontSize: 18, fontWeight: 'bold', color: '#111827', marginBottom: 14 },
+  nearbyFixerCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F8F9FC', borderRadius: 16, padding: 12, marginBottom: 10 },
+  nearbyAvatar: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  nearbyAvatarText: { fontSize: 16, fontWeight: 'bold', color: '#fff' },
+  nearbyInfo: { flex: 1 },
+  nearbyName: { fontSize: 15, fontWeight: 'bold', color: '#111827' },
+  nearbyMeta: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+
+  // Chat List
+  chatListHeader: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 12 },
+  chatListTitle: { fontSize: 26, fontWeight: 'bold', color: '#111827' },
+  chatListCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, padding: 14, marginBottom: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 2 },
+  chatAvatar: { width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  chatAvatarText: { fontSize: 16, fontWeight: 'bold', color: '#fff' },
+  chatInfo: { flex: 1 },
+  chatInfoTop: { flexDirection: 'row', justifyContent: 'space-between' },
+  chatName: { fontSize: 15, fontWeight: 'bold', color: '#111827' },
+  chatTime: { fontSize: 12, color: '#9CA3AF' },
+  chatJob: { fontSize: 12, color: '#1A8A5A', fontWeight: '500', marginTop: 2 },
+  chatLastMsg: { fontSize: 13, color: '#6B7280', marginTop: 2 },
+
+  // Chat Detail
+  chatHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#1A8A5A', paddingHorizontal: 16, paddingVertical: 14 },
+  chatBack: { fontSize: 22, color: '#fff', fontWeight: 'bold' },
+  chatHeaderCenter: { flex: 1, alignItems: 'center' },
+  chatHeaderName: { fontSize: 16, fontWeight: 'bold', color: '#fff' },
+  chatHeaderSub: { fontSize: 12, color: 'rgba(255,255,255,0.8)' },
+  chatHeaderTitle: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
+  payIconBtn: { padding: 6 },
+  payIconText: { fontSize: 20 },
+  messagesList: { flex: 1, backgroundColor: '#F8F9FC' },
+  msgRow: { marginBottom: 10 },
+  msgRowMine: { alignItems: 'flex-end' },
+  msgRowTheirs: { alignItems: 'flex-start' },
+  msgBubble: { maxWidth: '78%', borderRadius: 20, padding: 12, paddingBottom: 8 },
+  msgBubbleMine: { backgroundColor: '#1A8A5A', borderBottomRightRadius: 4 },
+  msgBubbleTheirs: { backgroundColor: '#fff', borderBottomLeftRadius: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 1 },
+  msgText: { fontSize: 15, lineHeight: 20 },
+  msgTextMine: { color: '#fff' },
+  msgTextTheirs: { color: '#111827' },
+  msgTime: { fontSize: 11, marginTop: 4, alignSelf: 'flex-end' },
+  msgTimeMine: { color: 'rgba(255,255,255,0.7)' },
+  msgTimeTheirs: { color: '#9CA3AF' },
+  msgInputRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6', gap: 12 },
+  msgInput: { flex: 1, backgroundColor: '#F8F9FC', borderRadius: 24, paddingHorizontal: 16, paddingVertical: 10, fontSize: 15, color: '#111827', borderWidth: 1, borderColor: '#E5E7EB', maxHeight: 100 },
+  sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#1A8A5A', justifyContent: 'center', alignItems: 'center' },
+  sendBtnText: { fontSize: 18, color: '#fff', fontWeight: 'bold' },
+
+  // Payment
+  paymentCard: { margin: 16, backgroundColor: '#fff', borderRadius: 24, padding: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3 },
+  paymentServiceLabel: { fontSize: 12, color: '#9CA3AF', marginBottom: 4 },
+  paymentServiceName: { fontSize: 16, fontWeight: '600', color: '#111827', marginBottom: 24 },
+  paymentAmountBox: { backgroundColor: '#F8F9FC', borderRadius: 18, padding: 24, alignItems: 'center', marginBottom: 24 },
+  paymentAmountLabel: { fontSize: 13, color: '#6B7280', marginBottom: 4 },
+  paymentAmount: { fontSize: 48, fontWeight: 'bold', color: '#1A8A5A' },
+  paymentFeeNote: { fontSize: 12, color: '#9CA3AF', marginTop: 4 },
+  payBtn: { backgroundColor: '#fff', borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 14, padding: 16, alignItems: 'center', marginBottom: 12 },
+  payBtnEFT: {},
+  payBtnText: { fontSize: 15, fontWeight: '600', color: '#111827' },
+  paymentSecure: { fontSize: 12, color: '#9CA3AF', textAlign: 'center', marginTop: 8 },
+
+  // Create Job
+  createHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, backgroundColor: '#1A8A5A' },
+  createBack: { fontSize: 16, color: '#fff', fontWeight: '600' },
+  createTitle: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
+  createForm: { padding: 20 },
+  formLabel: { fontSize: 14, fontWeight: '600', color: '#374151', marginBottom: 8, marginTop: 4 },
+  formInput: { backgroundColor: '#fff', borderRadius: 14, padding: 14, borderWidth: 1.5, borderColor: '#E5E7EB', fontSize: 15, color: '#111827', marginBottom: 16 },
+  formTextArea: { height: 100, textAlignVertical: 'top' },
+  catGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 16 },
+  catGridItem: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 14, backgroundColor: '#F3F4F6', borderWidth: 1.5, borderColor: '#E5E7EB', alignItems: 'center', flexDirection: 'row', gap: 6 },
+  catGridItemActive: { backgroundColor: '#E8F5E9', borderColor: '#1A8A5A' },
+  catGridEmoji: { fontSize: 14 },
+  catGridText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+  catGridTextActive: { color: '#1A8A5A', fontWeight: '700' },
+  photoUploadBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F3F4F6', borderRadius: 12, padding: 12, marginBottom: 16, gap: 8, borderWidth: 1, borderColor: '#E5E7EB', borderStyle: 'dashed' },
+  photoUploadIcon: { fontSize: 24 },
+  photoUploadText: { fontSize: 14, color: '#6B7280' },
+  jobPhotoPreview: { width: '100%', height: 200, borderRadius: 12, marginBottom: 16, resizeMode: 'cover' },
+  submitBtn: { backgroundColor: '#1A8A5A', padding: 16, borderRadius: 16, alignItems: 'center', marginTop: 12, shadowColor: '#1A8A5A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 8, elevation: 6 },
+  submitBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+
+  // Profile
+  profileHeader: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8 },
+  profileHeaderTitle: { fontSize: 26, fontWeight: 'bold', color: '#111827' },
+  profileHero: { backgroundColor: '#fff', borderRadius: 24, padding: 28, alignItems: 'center', marginBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
+  profileBigAvatar: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#1A8A5A', justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
+  profileBigAvatarText: { fontSize: 30, fontWeight: 'bold', color: '#fff' },
+  profileAvatarImage: { width: 80, height: 80, borderRadius: 40 },
+  profileAvatarWrapper: { position: 'relative' },
+  editAvatarBadge: { position: 'absolute', bottom: 0, right: 0, backgroundColor: '#1A8A5A', borderRadius: 20, width: 32, height: 32, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#fff' },
+  editAvatarText: { fontSize: 16 },
+  profileName: { fontSize: 22, fontWeight: 'bold', color: '#111827', marginBottom: 6 },
+  profileRoleBadge: { backgroundColor: '#E8F5E9', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, marginBottom: 8 },
+  profileRoleText: { fontSize: 13, color: '#1A8A5A', fontWeight: '600' },
+  profileEmail: { fontSize: 14, color: '#9CA3AF' },
+  profilePhone: { fontSize: 14, color: '#6B7280', marginTop: 4 },
+  fixerProfileSection: { backgroundColor: '#fff', margin: 16, borderRadius: 20, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#111827' },
+  editBtnText: { color: '#1A8A5A', fontSize: 14, fontWeight: '600' },
+  infoRow: { flexDirection: 'row', marginBottom: 12, paddingVertical: 4 },
+  infoLabel: { width: 110, fontSize: 14, color: '#6B7280', fontWeight: '500' },
+  infoValue: { flex: 1, fontSize: 14, color: '#111827' },
+  editForm: { marginTop: 8 },
+  editInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, padding: 12, marginBottom: 12, fontSize: 14 },
+  bioInput: { height: 80, textAlignVertical: 'top' },
+  editButtons: { flexDirection: 'row', gap: 12, marginTop: 8 },
+  cancelEditBtn: { flex: 1, backgroundColor: '#F3F4F6', padding: 12, borderRadius: 12, alignItems: 'center' },
+  cancelEditText: { color: '#6B7280', fontWeight: '600' },
+  saveEditBtn: { flex: 1, backgroundColor: '#1A8A5A', padding: 12, borderRadius: 12, alignItems: 'center' },
+  saveEditText: { color: '#fff', fontWeight: '600' },
+  profileSection: { backgroundColor: '#fff', borderRadius: 20, overflow: 'hidden', marginBottom: 20, marginHorizontal: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 2 },
+  profileMenuItem: { flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  profileMenuIcon: { fontSize: 20, marginRight: 14, width: 28 },
+  profileMenuLabel: { flex: 1, fontSize: 15, color: '#111827' },
+  profileMenuArrow: { fontSize: 20, color: '#9CA3AF' },
+  logoutBtn: { backgroundColor: '#FEE2E2', borderRadius: 16, padding: 16, alignItems: 'center', marginHorizontal: 16, marginBottom: 20 },
+  logoutBtnText: { color: '#EF4444', fontWeight: '700', fontSize: 15 },
+
+  // Job Details
+  detailNavBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, backgroundColor: '#1A8A5A' },
+  detailBack: { fontSize: 16, color: '#fff', fontWeight: '600' },
+  detailNavTitle: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
+  detailShare: { fontSize: 14, color: 'rgba(255,255,255,0.9)', fontWeight: '600' },
+  detailCard: { backgroundColor: '#fff', borderRadius: 20, padding: 20, marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
+  jobDetailImage: { width: '100%', height: 200, borderRadius: 12, marginBottom: 16, resizeMode: 'cover' },
+  detailBadgeRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 14 },
+  detailCatBadge: { backgroundColor: '#E8F5E9', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16 },
+  detailCatText: { fontSize: 13, color: '#1A8A5A', fontWeight: '600' },
+  detailStatusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, alignSelf: 'flex-start' },
+  detailTitle: { fontSize: 22, fontWeight: 'bold', color: '#111827', marginBottom: 10 },
+  detailMetaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
+  detailMetaItem: { fontSize: 14, color: '#6B7280' },
+  detailPrice: { fontSize: 20, fontWeight: 'bold', color: '#1A8A5A' },
+  detailDesc: { fontSize: 15, color: '#4B5563', lineHeight: 22, marginBottom: 16 },
+  detailCustomerRow: { flexDirection: 'row', alignItems: 'center', paddingTop: 14, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
+  detailAvatarSmall: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#1A8A5A', justifyContent: 'center', alignItems: 'center', marginRight: 10 },
+  detailAvatarText: { fontSize: 13, fontWeight: 'bold', color: '#fff' },
+  detailCustomerName: { fontSize: 14, color: '#6B7280' },
+  actionBtn: { backgroundColor: '#1A8A5A', padding: 16, borderRadius: 16, alignItems: 'center', marginBottom: 12, shadowColor: '#1A8A5A', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 5 },
+  actionBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  reportBtn: { backgroundColor: '#FEE2E2', borderRadius: 12, padding: 12, alignItems: 'center', marginTop: 12 },
+  reportBtnText: { color: '#EF4444', fontSize: 14, fontWeight: '600' },
+
+  // Rate Job
+  rateContainer: { alignItems: 'center', paddingVertical: 40 },
+  rateTitle: { fontSize: 20, fontWeight: 'bold', color: '#111827', marginBottom: 20 },
+  rateStarsRow: { flexDirection: 'row', gap: 12, marginBottom: 24 },
+  rateStar: { fontSize: 48, color: '#D1D5DB' },
+  rateStarFilled: { color: '#F59E0B' },
+  rateReviewInput: { height: 100, textAlignVertical: 'top', marginTop: 20 },
+  rateSubtitle: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginTop: -12, marginBottom: 24 },
+  ratingLabel: { fontSize: 18, fontWeight: '700', color: '#1A8A5A', marginBottom: 16 },
+
+  // Admin Panel
+  adminHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, backgroundColor: '#1A8A5A' },
+  adminTabs: { flexDirection: 'row', backgroundColor: '#fff', paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  adminTab: { flex: 1, paddingVertical: 14, alignItems: 'center' },
+  adminTabActive: { borderBottomWidth: 2, borderBottomColor: '#1A8A5A' },
+  adminTabText: { fontSize: 14, color: '#6B7280', fontWeight: '500' },
+  adminTabTextActive: { color: '#1A8A5A' },
+  adminList: { padding: 16 },
+  adminUserCard: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 1 },
+  adminUserName: { fontSize: 16, fontWeight: 'bold', color: '#111827' },
+  adminUserEmail: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+  adminUserRole: { fontSize: 11, color: '#9CA3AF', marginTop: 2 },
+  adminBanBtn: { backgroundColor: '#FEE2E2', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
+  adminBanBtnText: { color: '#EF4444', fontSize: 12, fontWeight: '600' },
+  adminViewBtn: { backgroundColor: '#E8F5E9', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
+  adminViewBtnText: { color: '#1A8A5A', fontSize: 12, fontWeight: '600' },
+
+  // Tab Bar
+  tabBar: { backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingBottom: Platform.OS === 'ios' ? 20 : 8, paddingTop: 8, height: Platform.OS === 'ios' ? 80 : 64 },
+  tabLabel: { fontSize: 11, fontWeight: '500', marginTop: 2 },
+
+  // Payment status
+  payStatusBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, alignSelf: 'flex-start', marginBottom: 12 },
+  payPaid: { backgroundColor: '#D1FAE5' },
+  payPending: { backgroundColor: '#FEF3C7' },
+  payStatusText: { fontSize: 13, fontWeight: '600', color: '#374151' },
+
+  // Quotes panel
+  quotesPanel: { backgroundColor: '#fff', borderRadius: 20, padding: 16, marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
+  quotesPanelTitle: { fontSize: 16, fontWeight: 'bold', color: '#111827', marginBottom: 14 },
+  quoteCard: { backgroundColor: '#F8F9FC', borderRadius: 14, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: '#E5E7EB' },
+  quoteTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  quoteAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#1A8A5A', justifyContent: 'center', alignItems: 'center', marginRight: 10 },
+  quoteAvatarText: { fontSize: 14, fontWeight: 'bold', color: '#fff' },
+  quoteInfo: { flex: 1 },
+  quoteName: { fontSize: 15, fontWeight: 'bold', color: '#111827' },
+  quoteRating: { fontSize: 12, color: '#F59E0B' },
+  quoteAmount: { fontSize: 20, fontWeight: 'bold', color: '#1A8A5A' },
+  quoteMessage: { fontSize: 13, color: '#6B7280', marginBottom: 10, fontStyle: 'italic' },
+  quoteAcceptBtn: { backgroundColor: '#1A8A5A', borderRadius: 12, padding: 12, alignItems: 'center' },
+  quoteAcceptText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+
+  // Divider
+  divider: { height: 1, backgroundColor: '#E5E7EB', marginVertical: 12 },
+
+  // Photo upload remove
+  removePhotoBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 16, width: 32, height: 32, justifyContent: 'center', alignItems: 'center' },
+  removePhotoBtnText: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
+
+  // Notification styles (moved out of Notifications.setNotificationHandler)
+  notifCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, padding: 14, marginBottom: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 1 },
+  notifCardUnread: { backgroundColor: '#F0FDF4', borderLeftWidth: 3, borderLeftColor: '#1A8A5A' },
+  notifIconBox: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#E8F5E9', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  notifIcon: { fontSize: 20 },
+  notifContent: { flex: 1 },
+  notifTitle: { fontSize: 14, fontWeight: '700', color: '#111827', marginBottom: 2 },
+  notifBody: { fontSize: 13, color: '#4B5563', lineHeight: 18 },
+  notifTime: { fontSize: 11, color: '#9CA3AF', marginTop: 4 },
+  notifUnreadDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#1A8A5A', marginLeft: 8 },
+
+  // Fixer Detail styles (moved out of Notifications.setNotificationHandler)
+  fixerDetailHero: { backgroundColor: '#1A8A5A', padding: 28, alignItems: 'center' },
+  fixerDetailAvatar: { width: 88, height: 88, borderRadius: 44, justifyContent: 'center', alignItems: 'center', marginBottom: 12, borderWidth: 3, borderColor: 'rgba(255,255,255,0.4)' },
+  fixerDetailAvatarText: { fontSize: 30, fontWeight: 'bold', color: '#fff' },
+  fixerDetailName: { fontSize: 24, fontWeight: 'bold', color: '#fff', marginBottom: 4 },
+  fixerDetailStars: { fontSize: 16, color: '#FCD34D' },
+  fixerDetailRatingText: { fontSize: 13, color: 'rgba(255,255,255,0.85)' },
+  availableBadge: { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6, marginTop: 10 },
+  availableBadgeText: { fontSize: 13, color: '#fff', fontWeight: '600' },
+  fixerStatRow: { flexDirection: 'row', backgroundColor: '#fff', padding: 20, marginBottom: 12, justifyContent: 'space-around', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
+  fixerStatItem: { alignItems: 'center' },
+  fixerStatNum: { fontSize: 22, fontWeight: 'bold', color: '#1A8A5A' },
+  fixerStatLbl: { fontSize: 11, color: '#6B7280', marginTop: 2 },
+  fixerStatDivider: { width: 1, backgroundColor: '#E5E7EB' },
+  fixerDetailSection: { backgroundColor: '#fff', borderRadius: 20, margin: 12, marginTop: 0, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 1 },
+  fixerDetailSectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#111827', marginBottom: 12 },
+  fixerDetailBio: { fontSize: 14, color: '#4B5563', lineHeight: 22 },
+  skillsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  skillChip: { backgroundColor: '#E8F5E9', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6 },
+  skillChipText: { fontSize: 13, color: '#1A8A5A', fontWeight: '500' },
+  reviewCard: { backgroundColor: '#F8F9FC', borderRadius: 14, padding: 14, marginBottom: 10 },
+  reviewTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  reviewAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#1A8A5A', justifyContent: 'center', alignItems: 'center', marginRight: 10 },
+  reviewAvatarText: { fontSize: 14, fontWeight: 'bold', color: '#fff' },
+  reviewName: { fontSize: 14, fontWeight: '600', color: '#111827' },
+  reviewStars: { fontSize: 12, color: '#F59E0B' },
+  reviewDate: { fontSize: 11, color: '#9CA3AF' },
+  reviewComment: { fontSize: 13, color: '#4B5563', lineHeight: 20 },
+
+  // Job History styles (moved out of Notifications.setNotificationHandler)
+  historyCard: { backgroundColor: '#fff', borderRadius: 18, padding: 16, marginBottom: 14, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 2 },
+  historyCardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  historyCatBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0FDF4', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, gap: 4 },
+  historyCatText: { fontSize: 12, color: '#1A8A5A', fontWeight: '600' },
+  historyTitle: { fontSize: 16, fontWeight: 'bold', color: '#111827', marginBottom: 8 },
+  historyMeta: { flexDirection: 'row', gap: 16, marginBottom: 10 },
+  historyMetaItem: { fontSize: 12, color: '#6B7280' },
+  historyFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingTop: 10 },
+  historyDate: { flex: 1, fontSize: 11, color: '#9CA3AF' },
+  rateNowBtn: { backgroundColor: '#FEF3C7', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
+  rateNowBtnText: { fontSize: 12, color: '#92400E', fontWeight: '600' },
 });
